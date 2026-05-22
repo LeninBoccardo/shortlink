@@ -1297,7 +1297,7 @@ KEDA, PgBouncer, the migration Job, the egress `NetworkPolicy`, and the autoscal
 | `worker` | `shortlink-worker` | `8081` (not published) | 3 replicas; shorten + webhook + sweeper |
 | `observer` | `shortlink-observer` | `9000` | Backend only (ingest + WebSocket) |
 | `migrate` | `shortlink-migrate` | — | One-shot; `depends_on: postgres` (healthy) |
-| `postgres` | `postgres:16-alpine` | `5432` | — |
+| `postgres` | `postgres:16-alpine` | `55432` → `5432` | Host port `55432` avoids colliding with a native Postgres install |
 | `pgbouncer` | `edoburu/pgbouncer` | `6432` | Transaction-pooling in front of Postgres |
 | `redis` | `redis:7-alpine` | `6379` | No persistence needed locally |
 | `minio` | `minio/minio` | `9000` API / `9001` console | S3-compatible object storage |
@@ -1309,6 +1309,7 @@ Notes:
 - `worker`'s port `8081` is **not published to the host**; Prometheus scrapes it over the internal compose network.
 - `api` and `worker` declare `depends_on: { migrate: { condition: service_completed_successfully } }` so they start only after migrations finish.
 - The host-port overlap between MinIO API and the observer (both internal `9000`) is resolved by mapping MinIO to a different host port; inside the compose network services use service names.
+- Postgres is published on host port **`55432`** (not `5432`) so the stack coexists with a native Postgres install on the developer's machine; inside the compose network it still listens on `5432`. The container uses an explicit `POSTGRES_PASSWORD` — `POSTGRES_HOST_AUTH_METHOD=trust` is unreliable because initdb's default scram rules for `127.0.0.1`/`::1` shadow it.
 - The **load test runner is not a compose service** — it runs on the host on demand via `make loadtest` (a one-shot, lasting the attack duration). Its webhook sink listens on the host at `:8091`; the compose `worker` reaches it through `host.docker.internal`, so `SSRF_ALLOWLIST` for `api` and `worker` is set to `host.docker.internal` (resolves natively on Docker Desktop; on Linux add `extra_hosts: ["host.docker.internal:host-gateway"]`).
 - The compose file is **built up across milestones** — Postgres + MinIO from M1, Redis from M2, Prometheus + Grafana from M7, PgBouncer at M8 ([§17](#17-implementation-milestones)).
 
@@ -1348,7 +1349,7 @@ All binaries are configured through environment variables, parsed by `internal/c
 |----------|---------|---------|-------------|
 | `LOG_LEVEL` | `info` | all | `slog` level (`debug`/`info`/`warn`/`error`) |
 | `SHORT_URL_BASE` | `http://localhost:8080` | api, worker | Base URL for building short links and QR content |
-| `DATABASE_URL` | `postgres://shortlink@localhost:5432/shortlink` | api, worker, observer, keygen, migrate | Postgres DSN. In docker-compose / k8s this points at **PgBouncer** (`:6432`), not Postgres directly |
+| `DATABASE_URL` | `postgres://shortlink:shortlink@localhost:55432/shortlink?sslmode=disable` | api, worker, observer, keygen, migrate | Postgres DSN. The local default targets the docker-compose Postgres on host port `55432`; in k8s this points at **PgBouncer** (`:6432`), not Postgres directly |
 | `PG_POOL_SIZE` | `8` (api) / `4` (worker) | api, worker | `pgxpool` max connections per process |
 | `REDIS_URL` | `redis://localhost:6379` | api, worker, observer | Queue, rate-limit windows, pod heartbeats |
 | `API_PORT` | `8080` | api | HTTP listen port |
@@ -1357,8 +1358,8 @@ All binaries are configured through environment variables, parsed by `internal/c
 | `OBSERVER_URL` | `http://localhost:9000` | api, worker, loadtest | Target for event emission (`POST /ingest`) |
 | `QUEUE_DEPTH_THRESHOLD` | `100` | observer | Pending-job count above which `queue_depth_high` is emitted |
 | `MINIO_ENDPOINT` | `localhost:9000` | worker | Object storage endpoint |
-| `MINIO_ACCESS_KEY` | — (secret) | worker | Object storage credential |
-| `MINIO_SECRET_KEY` | — (secret) | worker | Object storage credential |
+| `MINIO_ACCESS_KEY` | `minioadmin` (local) | worker | Object storage credential; a real secret in production |
+| `MINIO_SECRET_KEY` | `minioadmin` (local) | worker | Object storage credential; a real secret in production |
 | `MINIO_BUCKET` | `shortlink-qr` | worker | QR bucket |
 | `MINIO_USE_SSL` | `false` | worker | TLS to object storage |
 | `SIGNED_URL_TTL` | `60s` | worker | Presigned QR download-URL lifetime |
@@ -1524,5 +1525,5 @@ The **observer hub is deliberately single-instance**. It is a stateful operabili
 
 ---
 
-*Specification version: 2.5 — revised after architecture review (2026-05-20).*  
+*Specification version: 2.6 — revised during Milestone 1 implementation (2026-05-22).*  
 *All library versions should be pinned in `go.mod` before implementation begins.*

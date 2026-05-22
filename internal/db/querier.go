@@ -11,14 +11,25 @@ import (
 )
 
 type Querier interface {
-	// Atomically transition pending -> processing. Zero rows means another worker
-	// already claimed it (or it is no longer pending); the caller branches on the
-	// row's current status. The lease-based re-claim of stale rows arrives in M2.
+	// Atomically transition a row to processing. Matches any pending or processing
+	// row: asynq never delivers a task to two workers at once, so a processing row
+	// is always this job's own prior attempt or a crashed worker — either way this
+	// attempt takes over. The returned updated_at is the lease token guarding
+	// finalize/fail; a stalled worker preempted by a re-claim fails that guard.
 	ClaimShortURL(ctx context.Context, jobID string) (ShortUrl, error)
+	// Run after the QR object is deleted from storage; the row itself is permanent.
+	ClearQRObject(ctx context.Context, jobID string) error
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
-	FailShortURL(ctx context.Context, jobID string) (int64, error)
-	// Write the assigned slug + QR object key and mark the job done. A unique
-	// violation on slug surfaces as an error so the worker can regenerate.
+	DeleteOldFailedShortURLs(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
+	// Abandoned pending/processing rows past SWEEP_STALE_AGE. Deleting a row frees
+	// any custom slug it had reserved.
+	DeleteStaleReservations(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
+	// Lease-guarded, same as finalize: a preempted worker cannot stamp 'failed'
+	// over a row another worker is actively re-processing.
+	FailShortURL(ctx context.Context, arg FailShortURLParams) (int64, error)
+	// Lease-guarded: zero rows means the lease was lost to a re-claim, so a stalled
+	// worker's late finalize is harmlessly discarded. A unique violation on slug
+	// surfaces as an error so the worker can regenerate.
 	FinalizeShortURL(ctx context.Context, arg FinalizeShortURLParams) (int64, error)
 	// Returns the key only if it exists and has not been revoked; a missing or
 	// revoked key both yield pgx.ErrNoRows, which the gateway maps to 401.
@@ -38,6 +49,8 @@ type Querier interface {
 	// makes the reservation race-free — zero rows returned means the slug is taken
 	// and the gateway responds 409.
 	InsertPendingShortURLWithSlug(ctx context.Context, arg InsertPendingShortURLWithSlugParams) (pgtype.UUID, error)
+	// done rows whose QR object has outlived QR_OBJECT_TTL and is still present.
+	ListExpiredQRObjects(ctx context.Context, arg ListExpiredQRObjectsParams) ([]ListExpiredQRObjectsRow, error)
 }
 
 var _ Querier = (*Queries)(nil)

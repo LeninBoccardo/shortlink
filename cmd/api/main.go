@@ -1,6 +1,6 @@
-// Command api is the ShortLink gateway. In Milestone 1 it also hosts the
-// in-process job queue and worker pool — the worker becomes its own binary in
-// M2 (SPEC §4.1).
+// Command api is the ShortLink gateway: it authenticates requests, reserves a
+// short_urls row, and enqueues a shorten job onto the Redis-backed queue. From
+// Milestone 2 job processing lives in the separate cmd/worker binary.
 package main
 
 import (
@@ -19,26 +19,21 @@ import (
 	"github.com/leninboccardo/shortlink/internal/queue"
 	"github.com/leninboccardo/shortlink/internal/security"
 	"github.com/leninboccardo/shortlink/internal/storage"
-	"github.com/leninboccardo/shortlink/internal/webhook"
 )
 
 const (
-	queueBuffer     = 1024
 	maxRequestBody  = 64 << 10 // 64 KiB cap on /shorten request bodies
 	maxURLLength    = 2048
 	httpDrainWindow = 10 * time.Second
 )
 
-// app holds the dependencies shared by the HTTP handlers and the in-process
-// job handlers.
+// app holds the dependencies shared by the gateway's HTTP handlers.
 type app struct {
-	cfg        *config.Config
-	log        *slog.Logger
-	queries    *db.Queries
-	store      *storage.ObjectStore
-	queue      queue.Queue
-	ssrf       *security.Validator
-	dispatcher *webhook.Dispatcher
+	cfg     *config.Config
+	log     *slog.Logger
+	queries *db.Queries
+	queue   queue.Queue
+	ssrf    *security.Validator
 }
 
 func main() {
@@ -65,29 +60,26 @@ func run() error {
 	defer pool.Close()
 	log.Info("connected to postgres")
 
-	store, err := storage.NewObjectStore(ctx, cfg.MinioEndpoint, cfg.MinioAccessKey,
-		cfg.MinioSecretKey, cfg.MinioBucket, cfg.MinioUseSSL)
+	q, err := queue.NewAsynqQueue(queue.AsynqConfig{
+		RedisURL:           cfg.RedisURL,
+		Concurrency:        cfg.WorkerConcurrency,
+		ShortenTimeout:     cfg.ClaimLease,
+		WebhookMaxAttempts: cfg.WebhookMaxAttempts,
+		DrainTimeout:       cfg.DrainTimeout,
+		Logger:             log,
+	})
 	if err != nil {
 		return err
 	}
-	log.Info("object storage ready", "bucket", cfg.MinioBucket)
-
-	ssrf := security.NewValidator(cfg.SSRFAllowlist)
-	q := queue.NewInProc(cfg.WorkerConcurrency, queueBuffer, log)
+	log.Info("connected to redis queue")
 
 	a := &app{
-		cfg:        cfg,
-		log:        log,
-		queries:    db.New(pool),
-		store:      store,
-		queue:      q,
-		ssrf:       ssrf,
-		dispatcher: webhook.NewDispatcher(ssrf.SafeClient(webhook.DeliveryTimeout)),
+		cfg:     cfg,
+		log:     log,
+		queries: db.New(pool),
+		queue:   q,
+		ssrf:    security.NewValidator(cfg.SSRFAllowlist),
 	}
-
-	q.Register(queue.TypeShorten, a.handleShortenJob)
-	q.Register(queue.TypeWebhook, a.handleWebhookJob)
-	q.Start()
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.APIPort),
@@ -113,17 +105,15 @@ func run() error {
 		log.Info("shutdown signal received", "signal", sig.String())
 	}
 
-	// 1. Stop accepting connections; let in-flight HTTP requests finish.
+	// Stop accepting connections; let in-flight requests finish.
 	httpCtx, cancel := context.WithTimeout(context.Background(), httpDrainWindow)
 	defer cancel()
 	if err := srv.Shutdown(httpCtx); err != nil {
 		log.Error("http shutdown", "error", err)
 	}
-	// 2. Drain the in-process queue — buffered jobs run to completion.
-	queueCtx, cancel2 := context.WithTimeout(context.Background(), cfg.DrainTimeout)
-	defer cancel2()
-	if err := q.Shutdown(queueCtx); err != nil {
-		log.Error("queue drain", "error", err)
+	// Close the queue client.
+	if err := q.Shutdown(context.Background()); err != nil {
+		log.Error("queue shutdown", "error", err)
 	}
 	log.Info("shutdown complete")
 	return nil

@@ -75,3 +75,11 @@ func (s *ObjectStore) PresignGet(ctx context.Context, key string, ttl time.Durat
 	}
 	return u.String(), nil
 }
+
+// Delete removes the object at key.
+func (s *ObjectStore) Delete(ctx context.Context, key string) error {
+	if err := s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{}); err != nil {
+		return fmt.Errorf("delete %q: %w", key, err)
+	}
+	return nil
+}

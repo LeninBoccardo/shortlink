@@ -14,28 +14,33 @@ ON CONFLICT (slug) DO NOTHING
 RETURNING id;
 
 -- name: ClaimShortURL :one
--- Atomically transition pending -> processing. Zero rows means another worker
--- already claimed it (or it is no longer pending); the caller branches on the
--- row's current status. The lease-based re-claim of stale rows arrives in M2.
+-- Atomically transition a row to processing. Matches any pending or processing
+-- row: asynq never delivers a task to two workers at once, so a processing row
+-- is always this job's own prior attempt or a crashed worker — either way this
+-- attempt takes over. The returned updated_at is the lease token guarding
+-- finalize/fail; a stalled worker preempted by a re-claim fails that guard.
 UPDATE short_urls
 SET status = 'processing', updated_at = NOW()
-WHERE job_id = $1 AND status = 'pending'
+WHERE job_id = $1 AND status IN ('pending', 'processing')
 RETURNING *;
 
 -- name: GetShortURLByJobID :one
 SELECT * FROM short_urls WHERE job_id = $1;
 
 -- name: FinalizeShortURL :execrows
--- Write the assigned slug + QR object key and mark the job done. A unique
--- violation on slug surfaces as an error so the worker can regenerate.
+-- Lease-guarded: zero rows means the lease was lost to a re-claim, so a stalled
+-- worker's late finalize is harmlessly discarded. A unique violation on slug
+-- surfaces as an error so the worker can regenerate.
 UPDATE short_urls
-SET slug = $2, qr_object = $3, status = 'done', updated_at = NOW()
-WHERE job_id = $1;
+SET slug = @slug, qr_object = @qr_object, status = 'done', updated_at = NOW()
+WHERE job_id = @job_id AND updated_at = @lease;
 
 -- name: FailShortURL :execrows
+-- Lease-guarded, same as finalize: a preempted worker cannot stamp 'failed'
+-- over a row another worker is actively re-processing.
 UPDATE short_urls
 SET status = 'failed', updated_at = NOW()
-WHERE job_id = $1;
+WHERE job_id = @job_id AND updated_at = @lease;
 
 -- name: GetActiveShortURLBySlug :one
 -- The redirect path: only rows that are finalized and unexpired resolve;
@@ -47,3 +52,23 @@ WHERE slug = $1
 
 -- name: IncrementHitCount :exec
 UPDATE short_urls SET hit_count = hit_count + 1 WHERE slug = $1;
+
+-- name: DeleteStaleReservations :execrows
+-- Abandoned pending/processing rows past SWEEP_STALE_AGE. Deleting a row frees
+-- any custom slug it had reserved.
+DELETE FROM short_urls
+WHERE status IN ('pending', 'processing') AND updated_at < @cutoff;
+
+-- name: DeleteOldFailedShortURLs :execrows
+DELETE FROM short_urls
+WHERE status = 'failed' AND updated_at < @cutoff;
+
+-- name: ListExpiredQRObjects :many
+-- done rows whose QR object has outlived QR_OBJECT_TTL and is still present.
+SELECT job_id, qr_object FROM short_urls
+WHERE status = 'done' AND qr_object IS NOT NULL AND updated_at < @cutoff
+LIMIT @max_rows;
+
+-- name: ClearQRObject :exec
+-- Run after the QR object is deleted from storage; the row itself is permanent.
+UPDATE short_urls SET qr_object = NULL WHERE job_id = @job_id;

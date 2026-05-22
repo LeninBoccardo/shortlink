@@ -46,12 +46,13 @@ func (q *InProc) Register(jobType string, h Handler) {
 }
 
 // Start launches the worker pool.
-func (q *InProc) Start() {
+func (q *InProc) Start() error {
 	for i := 0; i < q.workers; i++ {
 		q.wg.Add(1)
 		go q.worker()
 	}
 	q.log.Info("in-process queue started", "workers", q.workers)
+	return nil
 }
 
 // Enqueue submits a job. The RLock is held across the send so Shutdown — which

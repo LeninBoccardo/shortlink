@@ -159,7 +159,7 @@ func (a *app) handleShorten(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if err := a.queue.Enqueue(r.Context(), queue.Job{Type: queue.TypeShorten, Payload: payload}); err != nil {
+	if err := a.queue.Enqueue(r.Context(), queue.Job{Type: queue.TypeShorten, Key: jobID, Payload: payload}); err != nil {
 		a.log.Error("enqueue shorten job", "error", err, "job_id", jobID)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
 		return

@@ -14,13 +14,15 @@ import (
 const claimShortURL = `-- name: ClaimShortURL :one
 UPDATE short_urls
 SET status = 'processing', updated_at = NOW()
-WHERE job_id = $1 AND status = 'pending'
+WHERE job_id = $1 AND status IN ('pending', 'processing')
 RETURNING id, job_id, slug, original_url, api_key_id, webhook_url, qr_object, status, created_at, updated_at, expires_at, hit_count
 `
 
-// Atomically transition pending -> processing. Zero rows means another worker
-// already claimed it (or it is no longer pending); the caller branches on the
-// row's current status. The lease-based re-claim of stale rows arrives in M2.
+// Atomically transition a row to processing. Matches any pending or processing
+// row: asynq never delivers a task to two workers at once, so a processing row
+// is always this job's own prior attempt or a crashed worker — either way this
+// attempt takes over. The returned updated_at is the lease token guarding
+// finalize/fail; a stalled worker preempted by a re-claim fails that guard.
 func (q *Queries) ClaimShortURL(ctx context.Context, jobID string) (ShortUrl, error) {
 	row := q.db.QueryRow(ctx, claimShortURL, jobID)
 	var i ShortUrl
@@ -41,14 +43,59 @@ func (q *Queries) ClaimShortURL(ctx context.Context, jobID string) (ShortUrl, er
 	return i, err
 }
 
+const clearQRObject = `-- name: ClearQRObject :exec
+UPDATE short_urls SET qr_object = NULL WHERE job_id = $1
+`
+
+// Run after the QR object is deleted from storage; the row itself is permanent.
+func (q *Queries) ClearQRObject(ctx context.Context, jobID string) error {
+	_, err := q.db.Exec(ctx, clearQRObject, jobID)
+	return err
+}
+
+const deleteOldFailedShortURLs = `-- name: DeleteOldFailedShortURLs :execrows
+DELETE FROM short_urls
+WHERE status = 'failed' AND updated_at < $1
+`
+
+func (q *Queries) DeleteOldFailedShortURLs(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteOldFailedShortURLs, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteStaleReservations = `-- name: DeleteStaleReservations :execrows
+DELETE FROM short_urls
+WHERE status IN ('pending', 'processing') AND updated_at < $1
+`
+
+// Abandoned pending/processing rows past SWEEP_STALE_AGE. Deleting a row frees
+// any custom slug it had reserved.
+func (q *Queries) DeleteStaleReservations(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteStaleReservations, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const failShortURL = `-- name: FailShortURL :execrows
 UPDATE short_urls
 SET status = 'failed', updated_at = NOW()
-WHERE job_id = $1
+WHERE job_id = $1 AND updated_at = $2
 `
 
-func (q *Queries) FailShortURL(ctx context.Context, jobID string) (int64, error) {
-	result, err := q.db.Exec(ctx, failShortURL, jobID)
+type FailShortURLParams struct {
+	JobID string             `json:"job_id"`
+	Lease pgtype.Timestamptz `json:"lease"`
+}
+
+// Lease-guarded, same as finalize: a preempted worker cannot stamp 'failed'
+// over a row another worker is actively re-processing.
+func (q *Queries) FailShortURL(ctx context.Context, arg FailShortURLParams) (int64, error) {
+	result, err := q.db.Exec(ctx, failShortURL, arg.JobID, arg.Lease)
 	if err != nil {
 		return 0, err
 	}
@@ -57,20 +104,27 @@ func (q *Queries) FailShortURL(ctx context.Context, jobID string) (int64, error)
 
 const finalizeShortURL = `-- name: FinalizeShortURL :execrows
 UPDATE short_urls
-SET slug = $2, qr_object = $3, status = 'done', updated_at = NOW()
-WHERE job_id = $1
+SET slug = $1, qr_object = $2, status = 'done', updated_at = NOW()
+WHERE job_id = $3 AND updated_at = $4
 `
 
 type FinalizeShortURLParams struct {
-	JobID    string      `json:"job_id"`
-	Slug     pgtype.Text `json:"slug"`
-	QrObject pgtype.Text `json:"qr_object"`
+	Slug     pgtype.Text        `json:"slug"`
+	QrObject pgtype.Text        `json:"qr_object"`
+	JobID    string             `json:"job_id"`
+	Lease    pgtype.Timestamptz `json:"lease"`
 }
 
-// Write the assigned slug + QR object key and mark the job done. A unique
-// violation on slug surfaces as an error so the worker can regenerate.
+// Lease-guarded: zero rows means the lease was lost to a re-claim, so a stalled
+// worker's late finalize is harmlessly discarded. A unique violation on slug
+// surfaces as an error so the worker can regenerate.
 func (q *Queries) FinalizeShortURL(ctx context.Context, arg FinalizeShortURLParams) (int64, error) {
-	result, err := q.db.Exec(ctx, finalizeShortURL, arg.JobID, arg.Slug, arg.QrObject)
+	result, err := q.db.Exec(ctx, finalizeShortURL,
+		arg.Slug,
+		arg.QrObject,
+		arg.JobID,
+		arg.Lease,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -198,4 +252,41 @@ func (q *Queries) InsertPendingShortURLWithSlug(ctx context.Context, arg InsertP
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const listExpiredQRObjects = `-- name: ListExpiredQRObjects :many
+SELECT job_id, qr_object FROM short_urls
+WHERE status = 'done' AND qr_object IS NOT NULL AND updated_at < $1
+LIMIT $2
+`
+
+type ListExpiredQRObjectsParams struct {
+	Cutoff  pgtype.Timestamptz `json:"cutoff"`
+	MaxRows int32              `json:"max_rows"`
+}
+
+type ListExpiredQRObjectsRow struct {
+	JobID    string      `json:"job_id"`
+	QrObject pgtype.Text `json:"qr_object"`
+}
+
+// done rows whose QR object has outlived QR_OBJECT_TTL and is still present.
+func (q *Queries) ListExpiredQRObjects(ctx context.Context, arg ListExpiredQRObjectsParams) ([]ListExpiredQRObjectsRow, error) {
+	rows, err := q.db.Query(ctx, listExpiredQRObjects, arg.Cutoff, arg.MaxRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListExpiredQRObjectsRow{}
+	for rows.Next() {
+		var i ListExpiredQRObjectsRow
+		if err := rows.Scan(&i.JobID, &i.QrObject); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

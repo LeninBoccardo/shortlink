@@ -18,6 +18,10 @@ import (
 // ErrBlockedURL is returned when a URL resolves to a disallowed address.
 var ErrBlockedURL = errors.New("url resolves to a disallowed address")
 
+// dnsLookupTimeout bounds DNS resolution during validation so a hostname whose
+// DNS black-holes cannot hang the request path.
+const dnsLookupTimeout = 3 * time.Second
+
 // Validator validates webhook URLs and builds SSRF-safe HTTP clients.
 type Validator struct {
 	allowHosts map[string]struct{}
@@ -60,7 +64,9 @@ func (v *Validator) ValidateURL(ctx context.Context, raw string) error {
 	if _, ok := v.allowHosts[strings.ToLower(host)]; ok {
 		return nil
 	}
-	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	lookupCtx, cancel := context.WithTimeout(ctx, dnsLookupTimeout)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIP(lookupCtx, "ip", host)
 	if err != nil {
 		return fmt.Errorf("resolve %q: %w", host, err)
 	}
@@ -114,7 +120,9 @@ func (v *Validator) SafeClient(timeout time.Duration) *http.Client {
 			if _, ok := v.allowHosts[strings.ToLower(host)]; ok {
 				return dialer.DialContext(ctx, network, addr)
 			}
-			ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+			lookupCtx, cancel := context.WithTimeout(ctx, dnsLookupTimeout)
+			ips, err := net.DefaultResolver.LookupIP(lookupCtx, "ip", host)
+			cancel()
 			if err != nil {
 				return nil, err
 			}

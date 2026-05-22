@@ -23,7 +23,10 @@ import (
 	"github.com/leninboccardo/shortlink/internal/webhook"
 )
 
-const sweepInterval = 60 * time.Second
+const (
+	sweepInterval  = 60 * time.Second
+	startupTimeout = 15 * time.Second
+)
 
 // worker holds the dependencies shared by the job handlers.
 type worker struct {
@@ -51,16 +54,17 @@ func run() error {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.SlogLevel()}))
 	slog.SetDefault(log)
 
-	ctx := context.Background()
+	startupCtx, cancelStartup := context.WithTimeout(context.Background(), startupTimeout)
+	defer cancelStartup()
 
-	pool, err := storage.NewPool(ctx, cfg.DatabaseURL, cfg.PGPoolSize)
+	pool, err := storage.NewPool(startupCtx, cfg.DatabaseURL, cfg.PGPoolSize)
 	if err != nil {
 		return err
 	}
 	defer pool.Close()
 	log.Info("connected to postgres")
 
-	store, err := storage.NewObjectStore(ctx, cfg.MinioEndpoint, cfg.MinioAccessKey,
+	store, err := storage.NewObjectStore(startupCtx, cfg.MinioEndpoint, cfg.MinioAccessKey,
 		cfg.MinioSecretKey, cfg.MinioBucket, cfg.MinioUseSSL)
 	if err != nil {
 		return err
@@ -109,7 +113,10 @@ func run() error {
 	health := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.WorkerPort),
 		Handler:           healthHandler(),
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 	go func() {
 		log.Info("worker health server listening", "addr", health.Addr)

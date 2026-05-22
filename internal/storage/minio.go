@@ -43,6 +43,11 @@ func (s *ObjectStore) ensureBucket(ctx context.Context) error {
 		return nil
 	}
 	if err := s.client.MakeBucket(ctx, s.bucket, minio.MakeBucketOptions{}); err != nil {
+		// Another process may have created the bucket concurrently — re-check
+		// before treating this as a failure.
+		if exists, chkErr := s.client.BucketExists(ctx, s.bucket); chkErr == nil && exists {
+			return nil
+		}
 		return fmt.Errorf("create bucket %q: %w", s.bucket, err)
 	}
 	return nil

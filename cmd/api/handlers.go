@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	cryptorand "crypto/rand"
 	"encoding/json"
 	"errors"
@@ -101,6 +100,10 @@ func (a *app) handleShorten(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if req.ExpiresIn < 0 || req.ExpiresIn > maxExpiresIn {
+		httpx.WriteError(w, http.StatusBadRequest, "expires_in out of range")
+		return
+	}
 	var expiresAt pgtype.Timestamptz
 	if req.ExpiresIn > 0 {
 		expiresAt = pgtype.Timestamptz{
@@ -189,27 +192,8 @@ func (a *app) handleRedirect(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	a.recordHit(slug, r.UserAgent())
+	a.hits.record(slug, deviceFromUA(r.UserAgent()))
 	http.Redirect(w, r, row.OriginalUrl, http.StatusFound)
-}
-
-// recordHit writes analytics in the background so it never blocks the 302.
-func (a *app) recordHit(slug, userAgent string) {
-	device := deviceFromUA(userAgent)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := a.queries.InsertHit(ctx, db.InsertHitParams{
-			Slug:    slug,
-			Country: pgtype.Text{Valid: false}, // GeoIP is a v2 item
-			Device:  pgtype.Text{String: device, Valid: device != ""},
-		}); err != nil {
-			a.log.Warn("record hit", "error", err, "slug", slug)
-		}
-		if err := a.queries.IncrementHitCount(ctx, pgtype.Text{String: slug, Valid: true}); err != nil {
-			a.log.Warn("increment hit count", "error", err, "slug", slug)
-		}
-	}()
 }
 
 // validateSubmittedURL checks the URL being shortened (SPEC §9, URL validation).

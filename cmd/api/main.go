@@ -22,9 +22,11 @@ import (
 )
 
 const (
-	maxRequestBody  = 64 << 10 // 64 KiB cap on /shorten request bodies
-	maxURLLength    = 2048
+	maxRequestBody  = 64 << 10                // 64 KiB cap on /shorten request bodies
+	maxURLLength    = 2048                    // SPEC §9
+	maxExpiresIn    = 10 * 365 * 24 * 60 * 60 // 10 years, in seconds
 	httpDrainWindow = 10 * time.Second
+	startupTimeout  = 15 * time.Second
 )
 
 // app holds the dependencies shared by the gateway's HTTP handlers.
@@ -34,6 +36,7 @@ type app struct {
 	queries *db.Queries
 	queue   queue.Queue
 	ssrf    *security.Validator
+	hits    *hitRecorder
 }
 
 func main() {
@@ -51,9 +54,10 @@ func run() error {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.SlogLevel()}))
 	slog.SetDefault(log)
 
-	ctx := context.Background()
+	startupCtx, cancelStartup := context.WithTimeout(context.Background(), startupTimeout)
+	defer cancelStartup()
 
-	pool, err := storage.NewPool(ctx, cfg.DatabaseURL, cfg.PGPoolSize)
+	pool, err := storage.NewPool(startupCtx, cfg.DatabaseURL, cfg.PGPoolSize)
 	if err != nil {
 		return err
 	}
@@ -73,18 +77,23 @@ func run() error {
 	}
 	log.Info("connected to redis queue")
 
+	queries := db.New(pool)
 	a := &app{
 		cfg:     cfg,
 		log:     log,
-		queries: db.New(pool),
+		queries: queries,
 		queue:   q,
 		ssrf:    security.NewValidator(cfg.SSRFAllowlist),
+		hits:    newHitRecorder(queries, log),
 	}
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.APIPort),
 		Handler:           a.routes(),
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	serverErr := make(chan error, 1)
@@ -105,13 +114,15 @@ func run() error {
 		log.Info("shutdown signal received", "signal", sig.String())
 	}
 
-	// Stop accepting connections; let in-flight requests finish.
+	// 1. Stop accepting connections; let in-flight requests finish.
 	httpCtx, cancel := context.WithTimeout(context.Background(), httpDrainWindow)
 	defer cancel()
 	if err := srv.Shutdown(httpCtx); err != nil {
 		log.Error("http shutdown", "error", err)
 	}
-	// Close the queue client.
+	// 2. Drain buffered analytics writes — safe now that no handler is running.
+	a.hits.shutdown()
+	// 3. Close the queue client.
 	if err := q.Shutdown(context.Background()); err != nil {
 		log.Error("queue shutdown", "error", err)
 	}

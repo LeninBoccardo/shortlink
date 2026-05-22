@@ -1,0 +1,40 @@
+# ShortLink — local infrastructure.
+# Built up across milestones (SPEC §13). Milestone 1: Postgres + MinIO only.
+# Redis arrives in M2; Prometheus/Grafana in M7; PgBouncer in M8.
+#
+# Usage:  docker compose -f deploy/docker-compose.yml up -d   (or: make dev)
+name: shortlink
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: shortlink
+      POSTGRES_DB: shortlink
+      # Local-only: trust auth so the password-less DSN in SPEC §14 works as-is.
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shortlink -d shortlink"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # web console
+    volumes:
+      - minio-data:/data
+
+volumes:
+  postgres-data:
+  minio-data:

@@ -25,7 +25,7 @@ type Config struct {
 	ShortURLBase string `env:"SHORT_URL_BASE" envDefault:"http://localhost:8080"`
 
 	// Postgres
-	DatabaseURL string `env:"DATABASE_URL" envDefault:"postgres://shortlink@localhost:5432/shortlink?sslmode=disable"`
+	DatabaseURL string `env:"DATABASE_URL" envDefault:"postgres://shortlink:shortlink@localhost:55432/shortlink?sslmode=disable"`
 	PGPoolSize  int32  `env:"PG_POOL_SIZE" envDefault:"8"`
 
 	// Object storage (MinIO locally, any S3-compatible store in production)

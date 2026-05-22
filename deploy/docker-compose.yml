@@ -10,11 +10,12 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: shortlink
+      POSTGRES_PASSWORD: shortlink
       POSTGRES_DB: shortlink
-      # Local-only: trust auth so the password-less DSN in SPEC §14 works as-is.
-      POSTGRES_HOST_AUTH_METHOD: trust
     ports:
-      - "5432:5432"
+      # Host port 55432 (not 5432) avoids colliding with a native Postgres
+      # install. The container still listens on 5432 internally.
+      - "55432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:

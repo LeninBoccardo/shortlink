@@ -9,23 +9,26 @@ milestone (SPEC §17).
 
 ## Status
 
-**Milestone 1 — core pipeline, async via an in-process queue** (no Redis, no
-Kubernetes). The shorten pipeline is fully asynchronous: `POST /shorten`
-reserves a row, enqueues a job, and returns `202`; a worker pool generates the
-slug + QR code, uploads it, and delivers a signed, HMAC-signed webhook.
+**Milestone 2 — Redis-backed async queue.** The shorten pipeline runs over a
+Redis/asynq queue: `POST /shorten` reserves a row, enqueues a job, and returns
+`202`; a separate worker binary claims the job (lease-based idempotency +
+crash recovery), generates the slug + QR code, uploads it, and delivers a
+signed, HMAC-signed webhook with retry and a dead-letter queue. A sweeper
+reclaims abandoned rows and orphaned QR objects.
 
 ## Prerequisites
 
 - Go 1.26+
-- Docker (for local Postgres + MinIO)
+- Docker (for local Postgres + MinIO + Redis)
 
 ## Quickstart
 
 ```sh
-make dev        # start Postgres + MinIO (docker compose)
-make migrate    # apply the database schema
-make keys       # generate test API keys -> config/keys.yaml
-make run-api    # start the gateway on :8080
+make dev         # start Postgres + MinIO + Redis (docker compose)
+make migrate     # apply the database schema
+make keys        # generate test API keys -> config/keys.yaml
+make run-worker  # start the worker (in one terminal)
+make run-api     # start the gateway on :8080 (in another)
 ```
 
 Then shorten a URL (use a key printed by `make keys`):
@@ -44,9 +47,10 @@ The result is delivered asynchronously to the webhook URL. Visiting
 
 | Path | Purpose |
 |------|---------|
-| `cmd/api` | Gateway + in-process queue + worker pool (M1) |
+| `cmd/api` | Gateway — authenticate, reserve, enqueue |
+| `cmd/worker` | Queue consumer — shorten + webhook handlers + sweeper |
 | `cmd/migrate` | goose migration runner |
 | `cmd/keygen` | API key + webhook secret provisioning |
-| `internal/` | Domain packages (auth, shortener, qrcode, queue, webhook, …) |
+| `internal/` | Domain packages (auth, shortener, qrcode, queue, webhook, sweeper, …) |
 | `migrations/` | Postgres schema (goose) |
 | `deploy/` | docker-compose stack |

@@ -1,0 +1,12 @@
+# Local key material — contains real API keys + webhook secrets, never commit (SPEC §13)
+/config/keys.yaml
+
+# Build output
+/bin/
+
+# Local environment overrides
+.env
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db

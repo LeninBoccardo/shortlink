@@ -1,0 +1,15 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    # Schema is read from the goose migration files; sqlc understands the
+    # `-- +goose Up/Down` annotations and applies only the Up sections.
+    schema: "migrations"
+    queries: "internal/db/query"
+    gen:
+      go:
+        package: "db"
+        out: "internal/db"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_interface: true
+        emit_empty_slices: true

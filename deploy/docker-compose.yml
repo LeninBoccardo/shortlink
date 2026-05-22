@@ -1,6 +1,6 @@
 # ShortLink — local infrastructure.
-# Built up across milestones (SPEC §13). Milestone 1: Postgres + MinIO only.
-# Redis arrives in M2; Prometheus/Grafana in M7; PgBouncer in M8.
+# Built up across milestones (SPEC §13). Milestone 2: Postgres + MinIO + Redis.
+# Prometheus/Grafana arrive in M7; PgBouncer in M8.
 #
 # Usage:  docker compose -f deploy/docker-compose.yml up -d   (or: make dev)
 name: shortlink
@@ -35,6 +35,17 @@ services:
       - "9001:9001"   # web console
     volumes:
       - minio-data:/data
+
+  redis:
+    image: redis:7-alpine
+    # No persistence needed locally (SPEC §13); asynq tolerates a cold Redis.
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
 volumes:
   postgres-data:

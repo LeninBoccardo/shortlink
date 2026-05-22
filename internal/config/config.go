@@ -1,9 +1,8 @@
 // Package config loads runtime configuration from environment variables.
 //
-// Fields are introduced milestone by milestone. This is the Milestone 1 set
-// (SPEC §14): HTTP, Postgres, object storage, shortening/QR, the in-process
-// queue, and SSRF/URL security. Redis, the observer, rate limiting, and the
-// sweeper are added in later milestones.
+// Fields are introduced milestone by milestone (SPEC §14). This covers
+// Milestones 1–2: HTTP, Postgres, Redis, object storage, shortening/QR, the
+// worker/queue, the sweeper, and SSRF/URL security.
 package config
 
 import (
@@ -15,18 +14,22 @@ import (
 	"github.com/caarlos0/env/v11"
 )
 
-// Config is the fully-resolved configuration for every Milestone 1 binary.
+// Config is the fully-resolved configuration shared by the ShortLink binaries.
 // Each binary reads only the fields it needs.
 type Config struct {
 	LogLevel string `env:"LOG_LEVEL" envDefault:"info"`
 
-	// HTTP gateway
+	// HTTP
 	APIPort      int    `env:"API_PORT" envDefault:"8080"`
+	WorkerPort   int    `env:"WORKER_PORT" envDefault:"8081"`
 	ShortURLBase string `env:"SHORT_URL_BASE" envDefault:"http://localhost:8080"`
 
 	// Postgres
 	DatabaseURL string `env:"DATABASE_URL" envDefault:"postgres://shortlink:shortlink@localhost:55432/shortlink?sslmode=disable"`
 	PGPoolSize  int32  `env:"PG_POOL_SIZE" envDefault:"8"`
+
+	// Redis — backs the asynq task queue
+	RedisURL string `env:"REDIS_URL" envDefault:"redis://localhost:6379"`
 
 	// Object storage (MinIO locally, any S3-compatible store in production)
 	MinioEndpoint  string        `env:"MINIO_ENDPOINT" envDefault:"localhost:9000"`
@@ -41,9 +44,15 @@ type Config struct {
 	SlugLength     int `env:"SLUG_LENGTH" envDefault:"7"`
 	SlugMaxRetries int `env:"SLUG_MAX_RETRIES" envDefault:"5"`
 
-	// In-process queue + worker pool (M1; replaced by Redis/asynq in M2)
-	WorkerConcurrency int           `env:"WORKER_CONCURRENCY" envDefault:"3"`
-	DrainTimeout      time.Duration `env:"DRAIN_TIMEOUT" envDefault:"30s"`
+	// Worker / task queue
+	WorkerConcurrency  int           `env:"WORKER_CONCURRENCY" envDefault:"3"`
+	ClaimLease         time.Duration `env:"CLAIM_LEASE" envDefault:"2m"`
+	WebhookMaxAttempts int           `env:"WEBHOOK_MAX_ATTEMPTS" envDefault:"5"`
+	DrainTimeout       time.Duration `env:"DRAIN_TIMEOUT" envDefault:"30s"`
+
+	// Sweeper
+	SweepStaleAge time.Duration `env:"SWEEP_STALE_AGE" envDefault:"30m"`
+	QRObjectTTL   time.Duration `env:"QR_OBJECT_TTL" envDefault:"15m"`
 
 	// Security
 	SSRFAllowlist []string `env:"SSRF_ALLOWLIST" envSeparator:","`

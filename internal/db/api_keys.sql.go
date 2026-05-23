@@ -99,3 +99,14 @@ func (q *Queries) GetAPIKeyByID(ctx context.Context, id pgtype.UUID) (ApiKey, er
 	)
 	return i, err
 }
+
+const updateLastUsedAt = `-- name: UpdateLastUsedAt :exec
+UPDATE api_keys SET last_used_at = NOW() WHERE id = $1
+`
+
+// Bumps last_used_at; the gateway throttles how often this runs via a Redis
+// marker (SPEC §9 / LAST_USED_THROTTLE).
+func (q *Queries) UpdateLastUsedAt(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, updateLastUsedAt, id)
+	return err
+}

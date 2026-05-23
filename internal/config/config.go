@@ -54,6 +54,11 @@ type Config struct {
 	SweepStaleAge time.Duration `env:"SWEEP_STALE_AGE" envDefault:"30m"`
 	QRObjectTTL   time.Duration `env:"QR_OBJECT_TTL" envDefault:"15m"`
 
+	// Rate limiting (per-key sliding 60s window — SPEC §4.1/§9)
+	RateLimitFree    int           `env:"RATE_LIMIT_FREE" envDefault:"10"`
+	RateLimitPro     int           `env:"RATE_LIMIT_PRO" envDefault:"60"`
+	LastUsedThrottle time.Duration `env:"LAST_USED_THROTTLE" envDefault:"5m"`
+
 	// Security
 	SSRFAllowlist []string `env:"SSRF_ALLOWLIST" envSeparator:","`
 	URLBlocklist  []string `env:"URL_BLOCKLIST" envSeparator:","`

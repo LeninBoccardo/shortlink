@@ -13,3 +13,8 @@ WHERE key_hash = $1 AND revoked_at IS NULL;
 -- Used by the webhook-delivery job to recover the per-key signing secret and
 -- key hint from the short_urls row's api_key_id.
 SELECT * FROM api_keys WHERE id = $1;
+
+-- name: UpdateLastUsedAt :exec
+-- Bumps last_used_at; the gateway throttles how often this runs via a Redis
+-- marker (SPEC §9 / LAST_USED_THROTTLE).
+UPDATE api_keys SET last_used_at = NOW() WHERE id = $1;

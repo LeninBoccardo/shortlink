@@ -51,6 +51,9 @@ type Querier interface {
 	InsertPendingShortURLWithSlug(ctx context.Context, arg InsertPendingShortURLWithSlugParams) (pgtype.UUID, error)
 	// done rows whose QR object has outlived QR_OBJECT_TTL and is still present.
 	ListExpiredQRObjects(ctx context.Context, arg ListExpiredQRObjectsParams) ([]ListExpiredQRObjectsRow, error)
+	// Bumps last_used_at; the gateway throttles how often this runs via a Redis
+	// marker (SPEC §9 / LAST_USED_THROTTLE).
+	UpdateLastUsedAt(ctx context.Context, id pgtype.UUID) error
 }
 
 var _ Querier = (*Queries)(nil)

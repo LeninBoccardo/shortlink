@@ -59,6 +59,13 @@ type Config struct {
 	RateLimitPro     int           `env:"RATE_LIMIT_PRO" envDefault:"60"`
 	LastUsedThrottle time.Duration `env:"LAST_USED_THROTTLE" envDefault:"5m"`
 
+	// Observer hub (SPEC §4.3/§10) — every service emits best-effort events
+	// here; if it's down, events are dropped without blocking the caller.
+	ObserverURL          string `env:"OBSERVER_URL" envDefault:"http://localhost:9000"`
+	ObserverPort         int    `env:"OBSERVER_PORT" envDefault:"9000"`
+	QueueDepthThreshold  int64  `env:"QUEUE_DEPTH_THRESHOLD" envDefault:"100"`
+	PodID                string `env:"POD_ID"`
+
 	// Security
 	SSRFAllowlist []string `env:"SSRF_ALLOWLIST" envSeparator:","`
 	URLBlocklist  []string `env:"URL_BLOCKLIST" envSeparator:","`

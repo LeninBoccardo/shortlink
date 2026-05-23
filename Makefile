@@ -1,7 +1,7 @@
 # ShortLink — developer tasks (SPEC §13). Targets grow as milestones land.
 COMPOSE := docker compose -f deploy/docker-compose.yml
 
-.PHONY: dev dev-down migrate keys run-api run-worker build test sqlc tidy
+.PHONY: dev dev-down migrate keys run-api run-worker run-observer build test sqlc tidy
 
 dev: ## start local infrastructure (Postgres + MinIO + Redis)
 	$(COMPOSE) up -d
@@ -20,6 +20,9 @@ run-api: ## run the API gateway
 
 run-worker: ## run the worker (asynq consumer + sweeper)
 	go run ./cmd/worker
+
+run-observer: ## run the observer hub (events ingest + WebSocket broadcaster)
+	go run ./cmd/observer
 
 build: ## build all binaries into ./bin
 	go build -o bin/ ./cmd/...

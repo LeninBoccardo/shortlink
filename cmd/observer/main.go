@@ -18,13 +18,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hibiken/asynq"
+
 	"github.com/leninboccardo/shortlink/internal/config"
 	"github.com/leninboccardo/shortlink/internal/observer"
+	"github.com/leninboccardo/shortlink/internal/storage"
 )
 
 const (
 	httpDrainWindow = 10 * time.Second
 	shutdownTimeout = 5 * time.Second
+	startupTimeout  = 15 * time.Second
 )
 
 func main() {
@@ -42,8 +46,34 @@ func run() error {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.SlogLevel()}))
 	slog.SetDefault(log)
 
+	startupCtx, cancelStartup := context.WithTimeout(context.Background(), startupTimeout)
+	defer cancelStartup()
+
+	rc, err := storage.NewRedis(startupCtx, cfg.RedisURL)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	log.Info("connected to redis")
+
+	asynqOpt, err := asynq.ParseRedisURI(cfg.RedisURL)
+	if err != nil {
+		return fmt.Errorf("parse redis url for asynq inspector: %w", err)
+	}
+	inspector := asynq.NewInspector(asynqOpt)
+	defer inspector.Close()
+
 	hub := observer.NewHub(log)
 	hub.Start()
+
+	pollerCtx, stopPoller := context.WithCancel(context.Background())
+	defer stopPoller()
+	pollerDone := make(chan struct{})
+	go func() {
+		observer.NewPoller(hub, inspector, rc, cfg.QueueDepthThreshold, log).Run(pollerCtx)
+		close(pollerDone)
+	}()
+	log.Info("redis poller started", "threshold", cfg.QueueDepthThreshold)
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.ObserverPort),
@@ -78,7 +108,10 @@ func run() error {
 	if err := srv.Shutdown(httpCtx); err != nil {
 		log.Error("http shutdown", "error", err)
 	}
-	// 2. Drain the aggregator.
+	// 2. Stop the Redis poller.
+	stopPoller()
+	<-pollerDone
+	// 3. Drain the aggregator.
 	hubCtx, hubCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer hubCancel()
 	if err := hub.Shutdown(hubCtx); err != nil {

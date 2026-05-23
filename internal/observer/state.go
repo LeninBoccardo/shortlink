@@ -244,8 +244,8 @@ func (s *State) Prune(now time.Time) {
 	}
 }
 
-// SetPodCount + SetQueueDepth are written by the Redis poller (next commit).
-// They snap into place under the same lock as Ingest.
+// SetPodCount + SetQueueDepth are written by the Redis poller. They snap into
+// place under the same lock as Ingest.
 func (s *State) SetPodCount(n int) {
 	s.mu.Lock()
 	s.system.ActivePods = n
@@ -255,6 +255,25 @@ func (s *State) SetPodCount(n int) {
 func (s *State) SetQueueDepth(n int64) {
 	s.mu.Lock()
 	s.system.QueueDepth = n
+	s.mu.Unlock()
+}
+
+// clearLogs wipes the server-side log ring (responds to a browser clear_logs
+// command). The broadcaster sends every connected client a reset frame.
+func (s *State) clearLogs() {
+	s.mu.Lock()
+	s.logs = s.logs[:0]
+	s.mu.Unlock()
+}
+
+// resetStats wipes per-key counters and the system-wide totals. Pod count and
+// queue depth are re-derived on the next poller tick.
+func (s *State) resetStats() {
+	s.mu.Lock()
+	s.keyStats = make(map[string]*KeyStat)
+	s.system.TotalJobs = 0
+	s.system.totalErrors = 0
+	s.system.ErrorRate = 0
 	s.mu.Unlock()
 }
 

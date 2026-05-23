@@ -75,13 +75,20 @@ func run() error {
 	}()
 	log.Info("redis poller started", "threshold", cfg.QueueDepthThreshold)
 
+	broadcaster := observer.NewBroadcaster(hub, log)
+	mux := hub.Routes()
+	broadcaster.Register(mux)
+	broadcaster.Start()
+	log.Info("websocket broadcaster started")
+
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.ObserverPort),
-		Handler:           hub.Routes(),
+		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		// /stream is a long-lived WebSocket — no overall ReadTimeout/WriteTimeout
+		// or the upgrader would kill it. Browsers stay connected, per-message
+		// deadlines are set inside the broadcaster.
+		IdleTimeout: 60 * time.Second,
 	}
 
 	serverErr := make(chan error, 1)
@@ -108,10 +115,16 @@ func run() error {
 	if err := srv.Shutdown(httpCtx); err != nil {
 		log.Error("http shutdown", "error", err)
 	}
-	// 2. Stop the Redis poller.
+	// 2. Stop the WebSocket broadcaster (closes all client connections).
+	bcastCtx, bcastCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	if err := broadcaster.Shutdown(bcastCtx); err != nil {
+		log.Error("broadcaster shutdown", "error", err)
+	}
+	bcastCancel()
+	// 3. Stop the Redis poller.
 	stopPoller()
 	<-pollerDone
-	// 3. Drain the aggregator.
+	// 4. Drain the aggregator.
 	hubCtx, hubCancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer hubCancel()
 	if err := hub.Shutdown(hubCtx); err != nil {

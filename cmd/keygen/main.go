@@ -14,11 +14,11 @@ import (
 	"path/filepath"
 
 	"github.com/jackc/pgx/v5/pgtype"
-	"gopkg.in/yaml.v3"
 
 	"github.com/leninboccardo/shortlink/internal/auth"
 	"github.com/leninboccardo/shortlink/internal/config"
 	"github.com/leninboccardo/shortlink/internal/db"
+	"github.com/leninboccardo/shortlink/internal/keysfile"
 	"github.com/leninboccardo/shortlink/internal/storage"
 )
 
@@ -35,18 +35,6 @@ var profiles = []struct {
 	{name: "Abuser (over-limit)", tier: "pro", rate: 200},
 }
 
-type keyEntry struct {
-	Name             string `yaml:"name"`
-	Key              string `yaml:"key"`
-	WebhookSecret    string `yaml:"webhook_secret"`
-	AttackRatePerMin int    `yaml:"attack_rate_per_min"`
-	Tier             string `yaml:"tier"`
-}
-
-type keysFile struct {
-	Keys []keyEntry `yaml:"keys"`
-}
-
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -61,7 +49,7 @@ func main() {
 	defer pool.Close()
 	queries := db.New(pool)
 
-	var out keysFile
+	var out keysfile.File
 	fmt.Println("Generated API keys (shown once — store them now):")
 	for _, p := range profiles {
 		raw, err := auth.NewAPIKey()
@@ -82,7 +70,7 @@ func main() {
 		}); err != nil {
 			log.Fatalf("insert key %q: %v", p.name, err)
 		}
-		out.Keys = append(out.Keys, keyEntry{
+		out.Keys = append(out.Keys, keysfile.Entry{
 			Name:             p.name,
 			Key:              raw,
 			WebhookSecret:    secret,
@@ -95,12 +83,8 @@ func main() {
 	if err := os.MkdirAll(filepath.Dir(keysPath), 0o755); err != nil {
 		log.Fatalf("create config dir: %v", err)
 	}
-	data, err := yaml.Marshal(out)
-	if err != nil {
-		log.Fatalf("marshal keys: %v", err)
-	}
-	if err := os.WriteFile(keysPath, data, 0o600); err != nil {
-		log.Fatalf("write %s: %v", keysPath, err)
+	if err := keysfile.Write(keysPath, &out); err != nil {
+		log.Fatalf("write keys file: %v", err)
 	}
 	fmt.Printf("\nWrote %d keys to %s (gitignored — contains real secrets).\n", len(out.Keys), keysPath)
 }

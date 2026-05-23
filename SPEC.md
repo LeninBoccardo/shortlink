@@ -382,12 +382,10 @@ The worker registers **two queue handlers** plus a **sweeper loop**. The shorten
 ```text
 dequeue shorten job
   → claim record:  UPDATE short_urls SET status='processing', updated_at=now()
-                   WHERE job_id=$1 AND (status='pending'
-                         OR (status='processing' AND updated_at < now()-CLAIM_LEASE))
+                   WHERE job_id=$1 AND status IN ('pending','processing')
                    RETURNING updated_at AS lease, ...
        └─ zero rows → read the row's status and branch:
             done             → re-enqueue webhook job, ack
-            processing       → another worker holds a fresh lease → ack, skip
             failed / no row  → ack, skip
   → generate slug (if not custom)        — base62, SLUG_LENGTH chars, crypto/rand
   → generate QR code PNG                 — skip2/go-qrcode, QR_SIZE px
@@ -416,12 +414,12 @@ dequeue webhook job
 
 #### Idempotency & crash recovery
 
-The `short_urls` row is created **once**, by the gateway, before the job is even enqueued. Workers only ever *transition* it. The claim is a single atomic `UPDATE`; Postgres row-locking serializes any two workers that hold the same `job_id`. Two distinct cases:
+The `short_urls` row is created **once**, by the gateway, before the job is even enqueued. Workers only ever *transition* it. The claim is a single atomic `UPDATE`; Postgres row-locking serializes any two workers that hold the same `job_id`. The claim unconditionally re-acquires any row in `pending` or `processing` — there is no lease-cutoff in the `WHERE` clause. Two distinct cases:
 
-- **Concurrent duplicate delivery** — two workers receive the same `job_id` at once. Both run the claim `UPDATE`; exactly one matches a `pending` row and proceeds, the other matches zero rows and skips.
-- **Crash recovery** — a worker claims a row (`pending`→`processing`) and then dies before finalizing. asynq's recoverer redelivers the task. A plain `status='pending'` claim could never re-acquire that row, so the claim also matches a `processing` row whose `updated_at` is older than `CLAIM_LEASE` (default 2 min — far longer than the millisecond-scale real work, so a healthy worker is never preempted). The redelivered job re-claims and completes the abandoned work.
+- **Concurrent duplicate delivery** — two workers receive the same `job_id` at once. Both run the claim `UPDATE`; Postgres serializes them, so one writes first and bumps `updated_at`, while the second matches the row (still `processing`) and bumps `updated_at` again. Each gets its own fresh `updated_at` back as its **lease token**.
+- **Crash recovery** — a worker claims a row (`pending`→`processing`) and then dies before finalizing. asynq's recoverer redelivers the task. Because the claim matches `processing` unconditionally, the redelivered job re-claims and completes the abandoned work — there's no `CLAIM_LEASE` window to wait out. This deliberately diverges from a lease-cutoff claim: asynq retries can fire within seconds of a failure, and a cutoff `WHERE updated_at < now()-CLAIM_LEASE` would simply lose those retries.
 
-The claim returns its fresh `updated_at` as a **lease token**, and the finalizing `UPDATE` carries `AND updated_at=$lease` — so if a stalled worker is preempted by a re-claim, its late finalize matches zero rows and is harmlessly discarded. Combined with `asynq.Unique` on enqueue and a short asynq task timeout aligned to the lease ([§7](#7-queue-design)), duplicate execution is structurally impossible and crash recovery is automatic.
+Safety still rests on the lease token: the finalizing `UPDATE` carries `AND updated_at=$lease`, so if a stalled worker is preempted by a re-claim, its late finalize matches zero rows and is harmlessly discarded. Combined with `asynq.Unique` on enqueue and an asynq task timeout aligned to `CLAIM_LEASE` ([§7](#7-queue-design), [§14](#14-configuration)), duplicate **execution** is possible — two workers can run the same job in parallel — but duplicate **writes** are structurally impossible, so the row only ever transitions once.
 
 #### Permanent failure
 
@@ -910,7 +908,7 @@ asynq.Config{
 }
 ```
 
-- **Shorten jobs** are enqueued with `asynq.Unique(ttl)` keyed on `job_id` (deduplicates *enqueue*) and a short `asynq.Timeout` (~2 min, aligned with `CLAIM_LEASE`) so a crashed worker's task is recovered and redelivered quickly enough for the lease-based re-claim ([§4.2](#42-worker-pod)). The Postgres claim step deduplicates *execution*.
+- **Shorten jobs** are enqueued with `asynq.Unique(ttl)` keyed on `job_id` (deduplicates *enqueue*) and a short `asynq.Timeout` (~2 min, aligned with `CLAIM_LEASE`) so a crashed worker's task is bounded and asynq can redeliver it. The redelivered task unconditionally re-claims the abandoned `processing` row ([§4.2](#42-worker-pod)); the lease token in the finalize/fail `UPDATE` ensures only one writer ever lands the terminal transition.
 - **Webhook jobs** retry on the [§8](#8-webhook-contract) schedule.
 
 ### Dead-letter queue
@@ -1368,7 +1366,7 @@ All binaries are configured through environment variables, parsed by `internal/c
 | `SLUG_LENGTH` | `7` | worker | Generated slug length (base62) |
 | `SLUG_MAX_RETRIES` | `5` | worker | Collision retries before the length is bumped |
 | `WORKER_CONCURRENCY` | `3` | worker | Shorten-handler goroutines per pod |
-| `CLAIM_LEASE` | `2m` | worker | A `processing` row older than this may be re-claimed by a redelivered job ([§4.2](#42-worker-pod)) |
+| `CLAIM_LEASE` | `2m` | worker | asynq task timeout for the shorten job; also the freshness window for the `updated_at` lease token that guards finalize/fail. The claim itself is unconditional and does **not** key off this value ([§4.2](#42-worker-pod)) |
 | `SWEEP_STALE_AGE` | `30m` | worker | Age at which the sweeper deletes abandoned `pending`/`processing` rows |
 | `DRAIN_TIMEOUT` | `30s` | worker | Graceful-shutdown drain window |
 | `RATE_LIMIT_FREE` | `10` | api | Free-tier requests/minute |
@@ -1427,7 +1425,7 @@ Secrets (`DATABASE_URL`, `REDIS_URL`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`) co
 
 | Concern | Approach |
 |---------|----------|
-| Worker crash mid-job | Lease-based claim re-acquires a row abandoned in `processing`; asynq redelivers the task on pod death ([§4.2](#42-worker-pod)) |
+| Worker crash mid-job | asynq redelivers the task on pod death; the redelivered task unconditionally re-claims the abandoned `processing` row, and the lease-token finalize guard prevents a recovered stale worker from overwriting it ([§4.2](#42-worker-pod)) |
 | Redis restart | Jobs survive if asynq runs with AOF persistence |
 | Webhook failure | Decoupled queue; 5-attempt retry with backoff |
 | Slow client webhook | Cannot block shorten throughput — separate queue/tier |

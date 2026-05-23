@@ -465,7 +465,7 @@ On `SIGTERM` (Kubernetes drain):
 ### 4.3 Observer Hub
 
 **Binary:** `cmd/observer`  
-**Port:** `9000`  
+**Port:** `9090` (locally — kept off `9000` because docker-compose publishes MinIO's S3 API there; production Kubernetes can use whatever the Service exposes)  
 **Responsibility:** Receive structured events from all services, aggregate them in memory with TTL, and broadcast state to connected browser clients via WebSocket. **Backend only — it serves no static files.** The showcase frontend is served by the load test runner ([§4.4](#44-load-test-runner), [§11](#11-frontend-dashboard)).
 
 #### Endpoints
@@ -477,7 +477,7 @@ On `SIGTERM` (Kubernetes drain):
 | `GET` | `/healthz` | Health check |
 | `GET` | `/metrics` | Prometheus metrics |
 
-> The `/stream` WebSocket upgrader must set a custom `CheckOrigin` allowing the showcase page's origin: the page is served from `:8090` while the observer listens on `:9000`, so the connection is cross-origin and `gorilla/websocket`'s default `CheckOrigin` would reject it.
+> The `/stream` WebSocket upgrader must set a custom `CheckOrigin` allowing the showcase page's origin: the page is served from `:8090` while the observer listens on `:9090`, so the connection is cross-origin and `gorilla/websocket`'s default `CheckOrigin` would reject it.
 
 #### Internal concurrency model
 
@@ -1352,8 +1352,8 @@ All binaries are configured through environment variables, parsed by `internal/c
 | `REDIS_URL` | `redis://localhost:6379` | api, worker, observer | Queue, rate-limit windows, pod heartbeats |
 | `API_PORT` | `8080` | api | HTTP listen port |
 | `WORKER_PORT` | `8081` | worker | Health + metrics port |
-| `OBSERVER_PORT` | `9000` | observer | HTTP + WebSocket port |
-| `OBSERVER_URL` | `http://localhost:9000` | api, worker, loadtest | Target for event emission (`POST /ingest`) |
+| `OBSERVER_PORT` | `9090` | observer | HTTP + WebSocket port. Local default is `9090` (not `9000`) to leave the conventional MinIO host port free |
+| `OBSERVER_URL` | `http://localhost:9090` | api, worker, loadtest | Target for event emission (`POST /ingest`) |
 | `QUEUE_DEPTH_THRESHOLD` | `100` | observer | Pending-job count above which `queue_depth_high` is emitted |
 | `MINIO_ENDPOINT` | `localhost:9000` | worker | Object storage endpoint |
 | `MINIO_ACCESS_KEY` | `minioadmin` (local) | worker | Object storage credential; a real secret in production |

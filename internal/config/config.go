@@ -61,8 +61,10 @@ type Config struct {
 
 	// Observer hub (SPEC §4.3/§10) — every service emits best-effort events
 	// here; if it's down, events are dropped without blocking the caller.
-	ObserverURL         string `env:"OBSERVER_URL" envDefault:"http://localhost:9000"`
-	ObserverPort        int    `env:"OBSERVER_PORT" envDefault:"9000"`
+	// Local default is 9090, not 9000, because MinIO's local docker-compose
+	// publishes its S3 API on host 9000 — the two would collide otherwise.
+	ObserverURL         string `env:"OBSERVER_URL" envDefault:"http://localhost:9090"`
+	ObserverPort        int    `env:"OBSERVER_PORT" envDefault:"9090"`
 	QueueDepthThreshold int64  `env:"QUEUE_DEPTH_THRESHOLD" envDefault:"100"`
 	PodID               string `env:"POD_ID"`
 

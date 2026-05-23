@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/leninboccardo/shortlink/internal/auth"
+	"github.com/leninboccardo/shortlink/internal/events"
 	"github.com/leninboccardo/shortlink/internal/httpx"
 )
 
@@ -16,10 +18,25 @@ import (
 // <= 0 means unlimited — the limiter is skipped.
 type LimitForTier func(tier string) int
 
+// RateLimitInfo is the per-request context value the limiter publishes so that
+// downstream middleware (Logger) can include tier + limit in stat events
+// without having to re-resolve them.
+type RateLimitInfo struct {
+	Tier  string
+	Limit int
+}
+
+// RateLimitFromContext returns the resolved tier + limit if the RateLimit
+// middleware ran for this request.
+func RateLimitFromContext(ctx context.Context) (RateLimitInfo, bool) {
+	v, ok := ctx.Value(rateLimitCtxKey).(RateLimitInfo)
+	return v, ok
+}
+
 // RateLimit enforces the per-key sliding-window limit (SPEC §4.1/§9). On every
 // rate-limited request it sets X-RateLimit-Limit/Remaining/Reset; on rejection
-// it adds Retry-After and returns 429.
-func RateLimit(rl *auth.RateLimiter, limitFor LimitForTier, log *slog.Logger) func(http.Handler) http.Handler {
+// it adds Retry-After, emits a rate_limit_hit event, and returns 429.
+func RateLimit(rl *auth.RateLimiter, limitFor LimitForTier, em *events.Emitter, log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			key, ok := APIKey(r.Context())
@@ -29,7 +46,9 @@ func RateLimit(rl *auth.RateLimiter, limitFor LimitForTier, log *slog.Logger) fu
 				return
 			}
 			limit := limitFor(key.Tier)
-			dec, err := rl.Check(r.Context(), key.KeyHash, limit, chimw.GetReqID(r.Context()))
+			ctx := context.WithValue(r.Context(), rateLimitCtxKey, RateLimitInfo{Tier: key.Tier, Limit: limit})
+			r = r.WithContext(ctx)
+			dec, err := rl.Check(ctx, key.KeyHash, limit, chimw.GetReqID(ctx))
 			if err != nil {
 				// Fail open on Redis errors — do not block traffic on a Redis blip.
 				log.Error("rate limit check", "error", err)
@@ -47,6 +66,18 @@ func RateLimit(rl *auth.RateLimiter, limitFor LimitForTier, log *slog.Logger) fu
 					retryAfter = 1
 				}
 				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				em.Emit(events.Event{
+					Level:      events.LevelWarn,
+					Kind:       events.KindRateLimitHit,
+					APIKeyHash: key.KeyHash,
+					APIKeyHint: key.KeyHint,
+					Message:    "rate limit exceeded",
+					Meta: map[string]any{
+						"tier":        key.Tier,
+						"rate_limit":  limit,
+						"retry_after": retryAfter,
+					},
+				})
 				httpx.WriteError(w, http.StatusTooManyRequests, "rate limit exceeded")
 				return
 			}

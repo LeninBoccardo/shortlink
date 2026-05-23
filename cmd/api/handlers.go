@@ -18,6 +18,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"github.com/leninboccardo/shortlink/internal/db"
+	"github.com/leninboccardo/shortlink/internal/events"
 	"github.com/leninboccardo/shortlink/internal/httpx"
 	"github.com/leninboccardo/shortlink/internal/middleware"
 	"github.com/leninboccardo/shortlink/internal/queue"
@@ -43,8 +44,9 @@ func (a *app) routes() http.Handler {
 		}
 	}
 	r.With(
-		middleware.Auth(a.validator, a.toucher, a.log),
-		middleware.RateLimit(a.limiter, limitFor, a.log),
+		middleware.Auth(a.validator, a.toucher, a.emitter, a.log),
+		middleware.RateLimit(a.limiter, limitFor, a.emitter, a.log),
+		middleware.Stat(a.emitter),
 	).Post("/shorten", a.handleShorten)
 
 	// The redirect path is public — no API key required.
@@ -178,6 +180,18 @@ func (a *app) handleShorten(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+
+	a.emitter.Emit(events.Event{
+		Level:      events.LevelInfo,
+		Kind:       events.KindJobEnqueued,
+		APIKeyHash: apiKey.KeyHash,
+		APIKeyHint: apiKey.KeyHint,
+		Message:    "shorten job accepted",
+		Meta: map[string]any{
+			"job_id":      jobID,
+			"custom_slug": customSlug != "",
+		},
+	})
 
 	httpx.WriteJSON(w, http.StatusAccepted, shortenResponse{
 		JobID:   jobID,

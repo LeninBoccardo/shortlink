@@ -18,6 +18,7 @@ import (
 	"github.com/leninboccardo/shortlink/internal/auth"
 	"github.com/leninboccardo/shortlink/internal/config"
 	"github.com/leninboccardo/shortlink/internal/db"
+	"github.com/leninboccardo/shortlink/internal/events"
 	"github.com/leninboccardo/shortlink/internal/queue"
 	"github.com/leninboccardo/shortlink/internal/security"
 	"github.com/leninboccardo/shortlink/internal/storage"
@@ -43,6 +44,7 @@ type app struct {
 	validator *auth.Validator
 	toucher   *auth.LastUsedToucher
 	limiter   *auth.RateLimiter
+	emitter   *events.Emitter
 }
 
 func main() {
@@ -90,6 +92,12 @@ func run() error {
 	}
 	log.Info("redis queue client ready")
 
+	emitter := events.NewEmitter(events.Config{
+		URL:    cfg.ObserverURL,
+		Source: events.SourceAPI,
+		Logger: log,
+	})
+
 	queries := db.New(pool)
 	a := &app{
 		cfg:       cfg,
@@ -101,6 +109,7 @@ func run() error {
 		validator: auth.NewValidator(queries),
 		toucher:   auth.NewLastUsedToucher(queries, rc, cfg.LastUsedThrottle, log),
 		limiter:   auth.NewRateLimiter(rc, rateLimitWindow),
+		emitter:   emitter,
 	}
 
 	srv := &http.Server{
@@ -142,6 +151,8 @@ func run() error {
 	if err := q.Shutdown(context.Background()); err != nil {
 		log.Error("queue shutdown", "error", err)
 	}
+	// 4. Flush any pending observer events with a bounded grace.
+	a.emitter.Close(2 * time.Second)
 	log.Info("shutdown complete")
 	return nil
 }

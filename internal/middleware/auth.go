@@ -16,10 +16,10 @@ type ctxKey int
 
 const apiKeyCtxKey ctxKey = iota
 
-// Auth validates the X-Api-Key header and injects the resolved api_keys row
-// into the request context. Apply it only to authenticated routes — the
-// redirect path is public.
-func Auth(v *auth.Validator, log *slog.Logger) func(http.Handler) http.Handler {
+// Auth validates the X-Api-Key header, records the touch (throttled), and
+// injects the resolved api_keys row into the request context. Apply it only
+// to authenticated routes — the redirect path is public.
+func Auth(v *auth.Validator, t *auth.LastUsedToucher, log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			raw := r.Header.Get("X-Api-Key")
@@ -34,6 +34,9 @@ func Auth(v *auth.Validator, log *slog.Logger) func(http.Handler) http.Handler {
 				return
 			}
 			ctx := context.WithValue(r.Context(), apiKeyCtxKey, key)
+			if t != nil {
+				t.Touch(ctx, key.KeyHash, key.ID)
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

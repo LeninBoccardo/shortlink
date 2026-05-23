@@ -17,7 +17,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/oklog/ulid/v2"
 
-	"github.com/leninboccardo/shortlink/internal/auth"
 	"github.com/leninboccardo/shortlink/internal/db"
 	"github.com/leninboccardo/shortlink/internal/httpx"
 	"github.com/leninboccardo/shortlink/internal/middleware"
@@ -33,8 +32,20 @@ func (a *app) routes() http.Handler {
 
 	r.Get("/healthz", a.handleHealth)
 
-	validator := auth.NewValidator(a.queries)
-	r.With(middleware.Auth(validator, a.log)).Post("/shorten", a.handleShorten)
+	limitFor := func(tier string) int {
+		switch tier {
+		case "pro":
+			return a.cfg.RateLimitPro
+		case "unlimited":
+			return 0
+		default:
+			return a.cfg.RateLimitFree
+		}
+	}
+	r.With(
+		middleware.Auth(a.validator, a.toucher, a.log),
+		middleware.RateLimit(a.limiter, limitFor, a.log),
+	).Post("/shorten", a.handleShorten)
 
 	// The redirect path is public — no API key required.
 	r.Get("/{slug}", a.handleRedirect)

@@ -1,6 +1,7 @@
-// Command api is the ShortLink gateway: it authenticates requests, reserves a
-// short_urls row, and enqueues a shorten job onto the Redis-backed queue. From
-// Milestone 2 job processing lives in the separate cmd/worker binary.
+// Command api is the ShortLink gateway: it authenticates requests, applies the
+// per-key rate limit, reserves a short_urls row, and enqueues a shorten job
+// onto the Redis-backed queue. From Milestone 2 job processing lives in the
+// separate cmd/worker binary.
 package main
 
 import (
@@ -14,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/leninboccardo/shortlink/internal/auth"
 	"github.com/leninboccardo/shortlink/internal/config"
 	"github.com/leninboccardo/shortlink/internal/db"
 	"github.com/leninboccardo/shortlink/internal/queue"
@@ -27,16 +29,20 @@ const (
 	maxExpiresIn    = 10 * 365 * 24 * 60 * 60 // 10 years, in seconds
 	httpDrainWindow = 10 * time.Second
 	startupTimeout  = 15 * time.Second
+	rateLimitWindow = time.Minute // SPEC §4.1 — fixed 60s sliding window
 )
 
 // app holds the dependencies shared by the gateway's HTTP handlers.
 type app struct {
-	cfg     *config.Config
-	log     *slog.Logger
-	queries *db.Queries
-	queue   queue.Queue
-	ssrf    *security.Validator
-	hits    *hitRecorder
+	cfg       *config.Config
+	log       *slog.Logger
+	queries   *db.Queries
+	queue     queue.Queue
+	ssrf      *security.Validator
+	hits      *hitRecorder
+	validator *auth.Validator
+	toucher   *auth.LastUsedToucher
+	limiter   *auth.RateLimiter
 }
 
 func main() {
@@ -64,6 +70,13 @@ func run() error {
 	defer pool.Close()
 	log.Info("connected to postgres")
 
+	rc, err := storage.NewRedis(startupCtx, cfg.RedisURL)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	log.Info("connected to redis")
+
 	q, err := queue.NewAsynqQueue(queue.AsynqConfig{
 		RedisURL:           cfg.RedisURL,
 		Concurrency:        cfg.WorkerConcurrency,
@@ -75,16 +88,19 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	log.Info("connected to redis queue")
+	log.Info("redis queue client ready")
 
 	queries := db.New(pool)
 	a := &app{
-		cfg:     cfg,
-		log:     log,
-		queries: queries,
-		queue:   q,
-		ssrf:    security.NewValidator(cfg.SSRFAllowlist),
-		hits:    newHitRecorder(queries, log),
+		cfg:       cfg,
+		log:       log,
+		queries:   queries,
+		queue:     q,
+		ssrf:      security.NewValidator(cfg.SSRFAllowlist),
+		hits:      newHitRecorder(queries, log),
+		validator: auth.NewValidator(queries),
+		toucher:   auth.NewLastUsedToucher(queries, rc, cfg.LastUsedThrottle, log),
+		limiter:   auth.NewRateLimiter(rc, rateLimitWindow),
 	}
 
 	srv := &http.Server{

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/leninboccardo/shortlink/internal/db"
+	"github.com/leninboccardo/shortlink/internal/events"
 	"github.com/leninboccardo/shortlink/internal/qrcode"
 	"github.com/leninboccardo/shortlink/internal/queue"
 	"github.com/leninboccardo/shortlink/internal/shortener"
@@ -21,6 +22,7 @@ import (
 // handleShortenJob runs the shorten pipeline: claim -> slug -> QR -> upload ->
 // finalize -> enqueue webhook (SPEC §4.2).
 func (w *worker) handleShortenJob(ctx context.Context, payload []byte) error {
+	started := time.Now()
 	var p queue.ShortenJobPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fmt.Errorf("unmarshal shorten payload: %w", err)
@@ -47,16 +49,16 @@ func (w *worker) handleShortenJob(ctx context.Context, payload []byte) error {
 		if generated {
 			s, err := shortener.Generate(w.cfg.SlugLength)
 			if err != nil {
-				return w.shortenFailed(ctx, p.JobID, lease, fmt.Errorf("generate slug: %w", err))
+				return w.shortenFailed(ctx, p, lease, fmt.Errorf("generate slug: %w", err))
 			}
 			slug = s
 		}
 		png, err := qrcode.Generate(w.cfg.ShortURLBase+"/"+slug, w.cfg.QRSize)
 		if err != nil {
-			return w.shortenFailed(ctx, p.JobID, lease, fmt.Errorf("generate qr: %w", err))
+			return w.shortenFailed(ctx, p, lease, fmt.Errorf("generate qr: %w", err))
 		}
 		if err := w.store.Upload(ctx, qrKey, png, "image/png"); err != nil {
-			return w.shortenFailed(ctx, p.JobID, lease, fmt.Errorf("upload qr: %w", err))
+			return w.shortenFailed(ctx, p, lease, fmt.Errorf("upload qr: %w", err))
 		}
 		rows, err := w.queries.FinalizeShortURL(ctx, db.FinalizeShortURLParams{
 			Slug:     pgtype.Text{String: slug, Valid: true},
@@ -69,7 +71,7 @@ func (w *worker) handleShortenJob(ctx context.Context, payload []byte) error {
 				w.log.Warn("slug collision, regenerating", "job_id", p.JobID, "attempt", attempt+1)
 				continue
 			}
-			return w.shortenFailed(ctx, p.JobID, lease, fmt.Errorf("finalize %s: %w", p.JobID, err))
+			return w.shortenFailed(ctx, p, lease, fmt.Errorf("finalize %s: %w", p.JobID, err))
 		}
 		if rows == 0 {
 			w.log.Warn("finalize matched no rows; lease lost to a re-claim", "job_id", p.JobID)
@@ -79,6 +81,18 @@ func (w *worker) handleShortenJob(ctx context.Context, payload []byte) error {
 	}
 
 	w.log.Info("shorten job complete", "job_id", p.JobID, "slug", slug)
+	w.emitter.Emit(events.Event{
+		Level:      events.LevelInfo,
+		Kind:       events.KindJobComplete,
+		APIKeyHash: p.APIKeyHash,
+		APIKeyHint: p.APIKeyHint,
+		Message:    "shorten job completed: slug=" + slug,
+		Meta: map[string]any{
+			"job_id":      p.JobID,
+			"slug":        slug,
+			"duration_ms": time.Since(started).Milliseconds(),
+		},
+	})
 	w.enqueueWebhook(ctx, p.JobID)
 	return nil
 }
@@ -161,12 +175,36 @@ func (w *worker) handleWebhookJob(ctx context.Context, payload []byte) error {
 		CreatedAt:   row.CreatedAt.Time.UTC().Format(time.RFC3339),
 	}
 	if err := w.dispatcher.Deliver(ctx, row.WebhookUrl, apiKey.WebhookSecret, apiKey.KeyHint, body); err != nil {
-		if queue.IsLastAttempt(ctx) {
+		final := queue.IsLastAttempt(ctx)
+		if final {
 			w.log.Error("webhook delivery permanently failed (archived)", "job_id", p.JobID, "error", err)
 		}
+		w.emitter.Emit(events.Event{
+			Level:      events.LevelError,
+			Kind:       events.KindWebhookFailed,
+			APIKeyHash: apiKey.KeyHash,
+			APIKeyHint: apiKey.KeyHint,
+			Message:    "webhook delivery failed: " + err.Error(),
+			Meta: map[string]any{
+				"job_id":        p.JobID,
+				"target":        row.WebhookUrl,
+				"final_attempt": final,
+			},
+		})
 		return fmt.Errorf("deliver webhook for %s: %w", p.JobID, err)
 	}
 	w.log.Info("webhook delivered", "job_id", p.JobID, "target", row.WebhookUrl)
+	w.emitter.Emit(events.Event{
+		Level:      events.LevelInfo,
+		Kind:       events.KindWebhookSent,
+		APIKeyHash: apiKey.KeyHash,
+		APIKeyHint: apiKey.KeyHint,
+		Message:    "webhook delivered",
+		Meta: map[string]any{
+			"job_id": p.JobID,
+			"target": row.WebhookUrl,
+		},
+	})
 	return nil
 }
 
@@ -187,9 +225,18 @@ func (w *worker) enqueueWebhook(ctx context.Context, jobID string) {
 // 'failed' (lease-guarded) so the sweeper later frees any reserved custom slug;
 // asynq then archives the task. The cause is returned so asynq retries or
 // archives the job.
-func (w *worker) shortenFailed(ctx context.Context, jobID string, lease pgtype.Timestamptz, cause error) error {
+func (w *worker) shortenFailed(ctx context.Context, p queue.ShortenJobPayload, lease pgtype.Timestamptz, cause error) error {
+	jobID := p.JobID
 	if !queue.IsLastAttempt(ctx) {
 		w.log.Warn("shorten attempt failed, will retry", "job_id", jobID, "error", cause)
+		w.emitter.Emit(events.Event{
+			Level:      events.LevelError,
+			Kind:       events.KindJobError,
+			APIKeyHash: p.APIKeyHash,
+			APIKeyHint: p.APIKeyHint,
+			Message:    "shorten attempt failed, will retry: " + cause.Error(),
+			Meta:       map[string]any{"job_id": jobID},
+		})
 		return cause
 	}
 	rows, err := w.queries.FailShortURL(ctx, db.FailShortURLParams{JobID: jobID, Lease: lease})
@@ -201,6 +248,14 @@ func (w *worker) shortenFailed(ctx context.Context, jobID string, lease pgtype.T
 	default:
 		w.log.Error("shorten job permanently failed (archived)", "job_id", jobID, "error", cause)
 	}
+	w.emitter.Emit(events.Event{
+		Level:      events.LevelError,
+		Kind:       events.KindJobDLQ,
+		APIKeyHash: p.APIKeyHash,
+		APIKeyHint: p.APIKeyHint,
+		Message:    "shorten job permanently failed (archived): " + cause.Error(),
+		Meta:       map[string]any{"job_id": jobID},
+	})
 	return cause
 }
 

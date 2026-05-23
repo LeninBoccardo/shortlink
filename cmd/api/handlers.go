@@ -167,6 +167,8 @@ func (a *app) handleShorten(w http.ResponseWriter, r *http.Request) {
 		OriginalURL: req.URL,
 		WebhookURL:  webhookURL,
 		APIKeyID:    uuidString(apiKey.ID),
+		APIKeyHash:  apiKey.KeyHash,
+		APIKeyHint:  apiKey.KeyHint,
 		CustomSlug:  customSlug,
 		EnqueuedAt:  time.Now().Unix(),
 	})

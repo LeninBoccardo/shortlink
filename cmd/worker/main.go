@@ -15,6 +15,7 @@ import (
 
 	"github.com/leninboccardo/shortlink/internal/config"
 	"github.com/leninboccardo/shortlink/internal/db"
+	"github.com/leninboccardo/shortlink/internal/events"
 	"github.com/leninboccardo/shortlink/internal/httpx"
 	"github.com/leninboccardo/shortlink/internal/queue"
 	"github.com/leninboccardo/shortlink/internal/security"
@@ -37,6 +38,8 @@ type worker struct {
 	queue      queue.Queue
 	ssrf       *security.Validator
 	dispatcher *webhook.Dispatcher
+	emitter    *events.Emitter
+	podID      string
 }
 
 func main() {
@@ -64,6 +67,13 @@ func run() error {
 	defer pool.Close()
 	log.Info("connected to postgres")
 
+	rc, err := storage.NewRedis(startupCtx, cfg.RedisURL)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	log.Info("connected to redis")
+
 	store, err := storage.NewObjectStore(startupCtx, cfg.MinioEndpoint, cfg.MinioAccessKey,
 		cfg.MinioSecretKey, cfg.MinioBucket, cfg.MinioUseSSL)
 	if err != nil {
@@ -83,6 +93,21 @@ func run() error {
 		return err
 	}
 
+	emitter := events.NewEmitter(events.Config{
+		URL:    cfg.ObserverURL,
+		Source: events.SourceWorker,
+		Logger: log,
+	})
+
+	podID := cfg.PodID
+	if podID == "" {
+		if h, err := os.Hostname(); err == nil {
+			podID = h
+		} else {
+			podID = "worker"
+		}
+	}
+
 	ssrf := security.NewValidator(cfg.SSRFAllowlist)
 	w := &worker{
 		cfg:        cfg,
@@ -92,6 +117,8 @@ func run() error {
 		queue:      q,
 		ssrf:       ssrf,
 		dispatcher: webhook.NewDispatcher(ssrf.SafeClient(webhook.DeliveryTimeout)),
+		emitter:    emitter,
+		podID:      podID,
 	}
 
 	q.Register(queue.TypeShorten, w.handleShortenJob)
@@ -99,6 +126,22 @@ func run() error {
 	if err := q.Start(); err != nil {
 		return err
 	}
+
+	// Pod heartbeat: refresh pod:{POD_ID}:alive (15s TTL) so the observer's
+	// Redis poller can count live pods (SPEC §4.2/§4.3).
+	heartbeatCtx, stopHeartbeat := context.WithCancel(context.Background())
+	heartbeatDone := make(chan struct{})
+	go func() {
+		runHeartbeat(heartbeatCtx, rc, podID, log)
+		close(heartbeatDone)
+	}()
+	emitter.Emit(events.Event{
+		Level:   events.LevelInfo,
+		Kind:    events.KindPodStarted,
+		Message: "worker pod started",
+		Meta:    map[string]any{"pod_id": podID},
+	})
+	log.Info("pod heartbeat started", "pod_id", podID, "ttl", heartbeatTTL)
 
 	// Sweeper loop.
 	sweepCtx, stopSweeper := context.WithCancel(context.Background())
@@ -141,6 +184,17 @@ func run() error {
 	healthCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = health.Shutdown(healthCtx)
+	// 4. Emit pod_stopped, stop the heartbeat refresher (deletes the key),
+	//    and flush the emitter.
+	emitter.Emit(events.Event{
+		Level:   events.LevelInfo,
+		Kind:    events.KindPodStopped,
+		Message: "worker pod stopped",
+		Meta:    map[string]any{"pod_id": podID},
+	})
+	stopHeartbeat()
+	<-heartbeatDone
+	emitter.Close(2 * time.Second)
 
 	log.Info("shutdown complete")
 	return nil

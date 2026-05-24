@@ -44,6 +44,16 @@ postgres://{{ .Values.postgres.user }}:{{ .Values.secrets.postgresPassword }}@{{
 {{- end -}}
 
 {{/*
+  DSN that bypasses PgBouncer and connects directly to Postgres. Used by the
+  migration Job: goose runs DDL inside transactions, which is unsafe under
+  transaction-mode pooling. Bypassing the pooler keeps session state stable
+  for the entire migration run.
+*/}}
+{{- define "shortlink.databaseURLDirect" -}}
+postgres://{{ .Values.postgres.user }}:{{ .Values.secrets.postgresPassword }}@{{ .Values.postgres.host }}:{{ .Values.postgres.port }}/{{ .Values.postgres.database }}?sslmode=disable
+{{- end -}}
+
+{{/*
   Image reference helper: image.repository + "-" + name + ":" + tag.
 */}}
 {{- define "shortlink.image" -}}

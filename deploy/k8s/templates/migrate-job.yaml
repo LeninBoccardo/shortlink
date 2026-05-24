@@ -1,0 +1,46 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Append the release revision so each upgrade gets a unique Job name; the
+  # hook-delete-policy then cleans up the previous revision's Job.
+  name: {{ include "shortlink.componentName" (dict "root" . "component" "migrate") }}-{{ .Release.Revision }}
+  labels:
+    {{- include "shortlink.componentLabels" (dict "root" . "component" "migrate") | nindent 4 }}
+  annotations:
+    # SPEC §12: migrations run as a Helm pre-install / pre-upgrade hook so
+    # one Job migrates the schema cleanly before any new app pod rolls out.
+    # An initContainer would run N times (per pod, per rollout) and crash-loop
+    # app pods on a bad migration; one Job is the contained, ordered alternative.
+    "helm.sh/hook": pre-install,pre-upgrade
+    # weight orders multiple hooks; we are the only one today but pin it for
+    # future predictability.
+    "helm.sh/hook-weight": "0"
+    # Keep the previous Job around until the new one is created so failures
+    # are inspectable; the new revision then deletes the old.
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  # Retries the binary itself if the pod fails to start (image pull, etc.).
+  # Migration-internal errors return non-zero, which goose treats as fatal
+  # and we want the release to fail visibly rather than loop.
+  backoffLimit: 1
+  # Reap the Job + its pod once it succeeds; keeps the namespace tidy.
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        {{- include "shortlink.componentLabels" (dict "root" . "component" "migrate") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: {{ include "shortlink.image" (dict "Values" .Values "name" "migrate") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["up"]
+          env:
+            # Direct DSN, NOT via PgBouncer -- DDL inside transactions is
+            # unsafe under transaction-mode pooling. See _helpers.tpl.
+            - name: DATABASE_URL
+              value: {{ include "shortlink.databaseURLDirect" . | quote }}
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { cpu: 200m, memory: 128Mi }

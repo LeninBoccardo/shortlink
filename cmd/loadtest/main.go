@@ -101,6 +101,18 @@ func run(cfg runConfig) error {
 	attackCtx, cancelAttack := context.WithTimeout(context.Background(), cfg.duration)
 	defer cancelAttack()
 
+	emitter.Emit(events.Event{
+		Level:   events.LevelInfo,
+		Kind:    events.KindAttackStarted,
+		Message: fmt.Sprintf("attack started: %d profiles, duration=%s, target=%s", len(keys.Keys), cfg.duration, cfg.target),
+		Meta: map[string]any{
+			"duration_s": int(cfg.duration.Seconds()),
+			"target":     cfg.target,
+			"profiles":   len(keys.Keys),
+			"sink_url":   cfg.sinkURL,
+		},
+	})
+
 	results := runAttacks(attackCtx, keys, cfg, emitter, log)
 
 	// Drain stop / sink errors briefly so the user can Ctrl-C mid-attack.
@@ -113,7 +125,16 @@ func run(cfg runConfig) error {
 	default:
 	}
 
-	printSummary(results, sink.counts(), log)
+	delivered := sink.counts()
+	rejected := sink.rejectedCounts()
+	printSummary(results, delivered, log)
+
+	emitter.Emit(events.Event{
+		Level:   events.LevelInfo,
+		Kind:    events.KindAttackComplete,
+		Message: fmt.Sprintf("attack complete: %d profiles", len(results)),
+		Meta:    summaryMeta(results, delivered, rejected),
+	})
 
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer shutCancel()
@@ -121,4 +142,26 @@ func run(cfg runConfig) error {
 		log.Warn("sink shutdown", "error", err)
 	}
 	return nil
+}
+
+// summaryMeta packs the per-key vegeta totals into a single map for the
+// attack_complete meta — the observer logs the message and the showcase page
+// can drill into the per-profile breakdown.
+func summaryMeta(results []attackResult, delivered, rejected map[string]int) map[string]any {
+	profiles := make([]map[string]any, 0, len(results))
+	for _, r := range results {
+		hint := hintOf(r.Profile.Key)
+		profiles = append(profiles, map[string]any{
+			"name":      r.Profile.Name,
+			"tier":      r.Profile.Tier,
+			"requests":  r.Metrics.Requests,
+			"success":   r.Metrics.Success,
+			"p99_ms":    r.Metrics.Latencies.P99.Milliseconds(),
+			"delivered": delivered[hint],
+			"rejected":  rejected[hint],
+		})
+	}
+	return map[string]any{
+		"profiles": profiles,
+	}
 }

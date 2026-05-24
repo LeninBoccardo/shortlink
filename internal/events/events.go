@@ -35,8 +35,7 @@ const (
 	SourceLoadtest = "loadtest"
 )
 
-// Event kinds (SPEC §10). Only the kinds used by api/worker/observer in M4
-// are listed here; loadtest kinds arrive in M5.
+// Event kinds (SPEC §10).
 const (
 	KindRequestCompleted = "request_completed"
 	KindAuthFailure      = "auth_failure"
@@ -51,6 +50,8 @@ const (
 	KindPodStopped       = "pod_stopped"
 	KindQueueDepthHigh   = "queue_depth_high"
 	KindDLQNonempty      = "dlq_nonempty"
+	KindAttackStarted    = "attack_started"
+	KindAttackComplete   = "attack_complete"
 )
 
 // Event is the wire envelope POSTed to /ingest (SPEC §10).

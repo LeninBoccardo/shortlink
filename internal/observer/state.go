@@ -100,7 +100,8 @@ var logTTLs = map[string]time.Duration{
 	events.KindPodStopped:     5 * time.Minute,
 	events.KindQueueDepthHigh: 1 * time.Minute,
 	events.KindDLQNonempty:    15 * time.Minute,
-	// loadtest kinds default to 2m via defaultLogTTL until M5 wires them.
+	events.KindAttackStarted:  10 * time.Minute,
+	events.KindAttackComplete: 30 * time.Minute,
 }
 
 // loggedKinds is the set of kinds that are appended to the log ring; the
@@ -118,6 +119,8 @@ var loggedKinds = map[string]bool{
 	events.KindPodStopped:     true,
 	events.KindQueueDepthHigh: true,
 	events.KindDLQNonempty:    true,
+	events.KindAttackStarted:  true,
+	events.KindAttackComplete: true,
 }
 
 // NewState returns an empty State with start time set to now.

@@ -6,7 +6,7 @@
 
 # Local environment overrides
 .env
-
+.claude/
 # OS / editor cruft
 .DS_Store
 Thumbs.db

@@ -49,6 +49,14 @@ type client struct {
 	conn       *websocket.Conn
 	out        chan []byte
 	logsCursor int64
+	done       chan struct{}
+	closeOnce  sync.Once
+}
+
+// close signals all the client's goroutines (writeLoop) and any in-flight
+// trySend calls to stop. Safe to call concurrently or repeatedly.
+func (c *client) close() {
+	c.closeOnce.Do(func() { close(c.done) })
 }
 
 // NewBroadcaster builds the broadcaster but does not start it — call Start
@@ -94,6 +102,7 @@ func (b *Broadcaster) Shutdown(ctx context.Context) error {
 	}
 	b.mu.Lock()
 	for c := range b.clients {
+		c.close()
 		_ = c.conn.Close()
 	}
 	b.clients = make(map[*client]struct{})
@@ -128,7 +137,7 @@ func (b *Broadcaster) handleStream(w http.ResponseWriter, r *http.Request) {
 		return conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
 	})
 
-	c := &client{conn: conn, out: make(chan []byte, 32)}
+	c := &client{conn: conn, out: make(chan []byte, 32), done: make(chan struct{})}
 
 	keys, logs, system, ts := b.hub.State().Snapshot()
 	_, cursor := b.hub.State().LogsSince(0)
@@ -184,10 +193,9 @@ func (b *Broadcaster) writeLoop(c *client) {
 	defer pingTicker.Stop()
 	for {
 		select {
-		case msg, ok := <-c.out:
-			if !ok {
-				return
-			}
+		case <-c.done:
+			return
+		case msg := <-c.out:
 			_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 			if err := c.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
 				return
@@ -203,11 +211,9 @@ func (b *Broadcaster) writeLoop(c *client) {
 
 func (b *Broadcaster) disconnect(c *client) {
 	b.mu.Lock()
-	if _, ok := b.clients[c]; ok {
-		delete(b.clients, c)
-		close(c.out)
-	}
+	delete(b.clients, c)
 	b.mu.Unlock()
+	c.close()
 	_ = c.conn.Close()
 }
 
@@ -256,9 +262,11 @@ func (b *Broadcaster) broadcastTick() {
 
 // trySend pushes msg onto the client's send buffer; if the buffer is full the
 // client is too slow and gets disconnected (we'd rather drop one stale viewer
-// than back up the entire broadcast).
+// than back up the entire broadcast). If the client is already disconnected,
+// the message is silently dropped.
 func (b *Broadcaster) trySend(c *client, msg []byte) {
 	select {
+	case <-c.done:
 	case c.out <- msg:
 	default:
 		b.log.Debug("ws client backed up, disconnecting")

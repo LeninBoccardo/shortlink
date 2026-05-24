@@ -23,10 +23,6 @@ import (
 // handleShortenJob runs the shorten pipeline: claim -> slug -> QR -> upload ->
 // finalize -> enqueue webhook (SPEC §4.2).
 func (w *worker) handleShortenJob(ctx context.Context, payload []byte) error {
-	started := time.Now()
-	defer func() {
-		metrics.JobDurationSeconds.WithLabelValues(metrics.QueueShorten).Observe(time.Since(started).Seconds())
-	}()
 	var p queue.ShortenJobPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fmt.Errorf("unmarshal shorten payload: %w", err)
@@ -43,6 +39,14 @@ func (w *worker) handleShortenJob(ctx context.Context, payload []byte) error {
 		return fmt.Errorf("claim %s: %w", p.JobID, err)
 	}
 	lease := row.UpdatedAt
+
+	// Only start the timer once we have a real claim to work on: this keeps
+	// payload-parse failures (sub-ms) and unclaimable re-deliveries out of the
+	// duration histogram, where they would skew p99 toward zero.
+	started := time.Now()
+	defer func() {
+		metrics.JobDurationSeconds.WithLabelValues(metrics.QueueShorten).Observe(time.Since(started).Seconds())
+	}()
 
 	slug := p.CustomSlug
 	generated := slug == ""
@@ -128,10 +132,6 @@ func (w *worker) handleUnclaimable(ctx context.Context, jobID string) error {
 // schedule and archives to the dead-letter set; the short_urls status is never
 // changed — the short URL was created, only delivery failed.
 func (w *worker) handleWebhookJob(ctx context.Context, payload []byte) error {
-	started := time.Now()
-	defer func() {
-		metrics.JobDurationSeconds.WithLabelValues(metrics.QueueWebhook).Observe(time.Since(started).Seconds())
-	}()
 	var p queue.WebhookJobPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fmt.Errorf("unmarshal webhook payload: %w", err)
@@ -150,6 +150,13 @@ func (w *worker) handleWebhookJob(ctx context.Context, payload []byte) error {
 			"job_id", p.JobID, "status", row.Status)
 		return nil
 	}
+
+	// Timer starts only once we know we'll actually deliver: the no-op skip
+	// paths above are sub-ms and would skew p99 toward zero.
+	started := time.Now()
+	defer func() {
+		metrics.JobDurationSeconds.WithLabelValues(metrics.QueueWebhook).Observe(time.Since(started).Seconds())
+	}()
 
 	apiKey, err := w.queries.GetAPIKeyByID(ctx, row.ApiKeyID)
 	if err != nil {

@@ -73,8 +73,12 @@ type SystemStat struct {
 // at NewState and never reallocated; `logHead` points at the next write
 // slot; `logCount` is the number of valid entries (0..LogRingSize). This
 // makes appendLog O(1) without per-event allocation.
+//
+// Locking: a sync.RWMutex so multiple broadcaster tick goroutines (one per
+// connected client) can read snapshots concurrently. Ingest, Prune, and the
+// other mutators take the write lock.
 type State struct {
-	mu          sync.Mutex
+	mu          sync.RWMutex
 	startedAt   time.Time
 	keyStats    map[string]*KeyStat
 	logs        []LogEntry
@@ -319,8 +323,8 @@ func (s *State) resetStats() {
 // broadcaster sends each newly-connected client. Hot-path code that ticks
 // every 500ms should use StatsSnapshot instead so it doesn't pay the log copy.
 func (s *State) Snapshot() (keys []KeyStat, logs []LogEntry, system SystemStat, ts time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	keys = s.snapshotKeysLocked()
 	logs = make([]LogEntry, s.logCount)
 	for i := 0; i < s.logCount; i++ {
@@ -334,8 +338,8 @@ func (s *State) Snapshot() (keys []KeyStat, logs []LogEntry, system SystemStat, 
 // fields in the periodic stats frame; logs are already shipped diff-only via
 // LogsSince, so copying the whole log ring per tick was pure waste.
 func (s *State) StatsSnapshot() (keys []KeyStat, system SystemStat, ts time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.snapshotKeysLocked(), s.system, s.updatedAt
 }
 
@@ -356,8 +360,8 @@ func (s *State) snapshotKeysLocked() []KeyStat {
 // new cursor. Used by the broadcaster to ship only the delta each tick.
 // Returned logs are newest-first, matching Snapshot.
 func (s *State) LogsSince(lastSeenN int64) (logs []LogEntry, cursor int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	cursor = s.logsAppendN
 	if lastSeenN >= cursor {
 		return nil, cursor

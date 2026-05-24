@@ -19,6 +19,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/leninboccardo/shortlink/internal/events"
 )
 
 // Status / decision / queue label values. Exported so call sites use the same
@@ -46,10 +48,16 @@ const (
 	ShortenStatusInternalError      = "internal_error"
 	ShortenStatusUnknown            = "unknown"
 
-	SourceAPI      = "api"
-	SourceWorker   = "worker"
-	SourceObserver = "observer"
-	SourceLoadtest = "loadtest"
+	// Source label values are re-exported from internal/events to keep one
+	// source of truth. Go consts resolve at compile time, so any drift in the
+	// events package is picked up automatically on rebuild -- and a renamed
+	// constant in events becomes a compile error here, not a silent bucket.
+	// (Direction is metrics -> events; events stays metrics-free per
+	// DECISIONS.md §11.)
+	SourceAPI      = events.SourceAPI
+	SourceWorker   = events.SourceWorker
+	SourceObserver = events.SourceObserver
+	SourceLoadtest = events.SourceLoadtest
 
 	EventRejectReasonAuth        = "auth"
 	EventRejectReasonBadJSON     = "bad_json"

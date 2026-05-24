@@ -25,14 +25,15 @@ import (
 const shutdownGrace = 5 * time.Second
 
 type runConfig struct {
-	keysPath    string
-	target      string
-	duration    time.Duration
-	observerURL string
-	grafanaURL  string
-	pagePort    int
-	sinkURL     string
-	sinkPort    int
+	keysPath      string
+	target        string
+	duration      time.Duration
+	observerURL   string
+	grafanaURL    string
+	prometheusURL string
+	pagePort      int
+	sinkURL       string
+	sinkPort      int
 }
 
 func main() {
@@ -50,6 +51,7 @@ func parseFlags() runConfig {
 	flag.DurationVar(&cfg.duration, "duration", 60*time.Second, "attack duration")
 	flag.StringVar(&cfg.observerURL, "observer", "http://localhost:9090", "observer hub URL")
 	flag.StringVar(&cfg.grafanaURL, "grafana", "http://localhost:3000", "Grafana base URL (M6 showcase page)")
+	flag.StringVar(&cfg.prometheusURL, "prometheus", "http://localhost:9091", "Prometheus base URL (test console targets-up check)")
 	flag.IntVar(&cfg.pagePort, "port", 8090, "showcase page port")
 	flag.StringVar(&cfg.sinkURL, "sink-url", "http://localhost:8091/sink", "webhook sink URL advertised to the API")
 	flag.IntVar(&cfg.sinkPort, "sink-port", 8091, "webhook sink listen port")
@@ -99,9 +101,11 @@ func run(cfg runConfig) error {
 	if err != nil {
 		return err
 	}
+	pageBase := fmt.Sprintf("http://localhost:%d", cfg.pagePort)
+	tests := newRunner(cfg, keys, cfg.prometheusURL, pageBase)
 	pageSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.pagePort),
-		Handler:           page.routes(),
+		Handler:           page.routes(tests),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

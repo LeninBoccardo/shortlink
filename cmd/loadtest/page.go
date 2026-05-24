@@ -113,14 +113,18 @@ func buildCSP(html []byte, observerURL, grafanaURL string) (string, error) {
 	}, "; "), nil
 }
 
-// routes returns an http.Handler that serves the rendered index at / and the
-// rest of the embedded web/ tree (app.css, app.js, future assets) as static
-// files.
-func (p *pageServer) routes() http.Handler {
+// routes returns an http.Handler that serves the rendered index at /, the
+// embedded web/ assets, and -- when a runner is passed -- the test-console
+// /tests/* endpoints. The /tests/* routes must be registered BEFORE the "/"
+// catch-all or http.ServeMux would shadow them with the asset handler.
+func (p *pageServer) routes(testRunner *runner) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+	if testRunner != nil {
+		testRunner.attachRoutes(mux)
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Headers shared by both the templated index and the static-asset
 		// fallback: stop MIME sniffing and refuse to be framed.

@@ -3,6 +3,14 @@
 
 # Build output
 /bin/
+# stray top-level binaries from `go build` without `-o`
+/*.exe
+/api
+/worker
+/observer
+/loadtest
+/migrate
+/keygen
 
 # Local environment overrides
 .env

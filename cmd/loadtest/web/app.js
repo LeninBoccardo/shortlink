@@ -482,5 +482,277 @@
     }
   })();
 
+  // ---------- test console (D3) -------------------------------------------
+  //
+  // Fetches /tests/list once on load, renders one card per case grouped by
+  // category. Click "Run" on an automated card -> POST /tests/run/{id},
+  // populate the card with the structured result (status, expected vs actual,
+  // headers, body, details). Manual cards render an instructional Steps list
+  // instead of a Run button. "Run all auto" iterates the automated cards
+  // sequentially with the same UI updates per card.
+
+  var testGrid = document.getElementById("test-grid");
+  var btnRunAll = document.getElementById("btn-run-all");
+  var testCatalog = [];            // list returned by /tests/list
+  var cardByID = Object.create(null); // id -> DOM root for the card
+  var runAllInFlight = false;
+
+  var CATEGORY_TITLES = {
+    happy:         "Happy paths",
+    edge:          "Edge cases",
+    observability: "Observability",
+    audit:         "Audit-fix verifications",
+    manual:        "Manual cards",
+  };
+
+  function loadCatalog() {
+    fetch("/tests/list", { headers: { "Accept": "application/json" } })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (cases) {
+        testCatalog = cases || [];
+        renderCatalog();
+      })
+      .catch(function (err) {
+        if (testGrid) testGrid.innerHTML = '<div class="empty">Failed to load test catalog: ' + escapeHTML(err.message) + '</div>';
+      });
+  }
+
+  function renderCatalog() {
+    if (!testGrid) return;
+    testGrid.innerHTML = "";
+    cardByID = Object.create(null);
+    var order = ["happy", "edge", "observability", "audit", "manual"];
+    order.forEach(function (cat) {
+      var cases = testCatalog.filter(function (c) { return c.category === cat; });
+      if (!cases.length) return;
+      var head = document.createElement("h3");
+      head.className = "test-cat";
+      head.textContent = CATEGORY_TITLES[cat] || cat;
+      testGrid.appendChild(head);
+      var group = document.createElement("div");
+      group.className = "test-cat-grid";
+      cases.forEach(function (c) {
+        var card = buildCard(c);
+        cardByID[c.id] = card;
+        group.appendChild(card);
+      });
+      testGrid.appendChild(group);
+    });
+  }
+
+  function buildCard(c) {
+    var card = document.createElement("div");
+    card.className = "test-card";
+    card.dataset.id = c.id;
+    card.dataset.status = "idle";
+
+    var header = document.createElement("div");
+    header.className = "test-card-head";
+
+    var title = document.createElement("strong");
+    title.textContent = c.title;
+    header.appendChild(title);
+
+    var badge = document.createElement("span");
+    badge.className = "test-badge test-badge-idle";
+    badge.textContent = c.manual ? "manual" : "idle";
+    header.appendChild(badge);
+    card.appendChild(header);
+
+    var desc = document.createElement("p");
+    desc.className = "test-desc";
+    desc.textContent = c.description;
+    card.appendChild(desc);
+
+    var actions = document.createElement("div");
+    actions.className = "test-actions";
+
+    if (c.manual) {
+      // Manual cards render a Steps toggle if steps are provided.
+      if (c.steps && c.steps.length) {
+        var toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "btn";
+        toggle.textContent = "Show steps";
+        var stepsList = document.createElement("ol");
+        stepsList.className = "test-steps";
+        stepsList.hidden = true;
+        c.steps.forEach(function (s) {
+          var li = document.createElement("li");
+          li.textContent = s;
+          stepsList.appendChild(li);
+        });
+        toggle.addEventListener("click", function () {
+          stepsList.hidden = !stepsList.hidden;
+          toggle.textContent = stepsList.hidden ? "Show steps" : "Hide steps";
+        });
+        actions.appendChild(toggle);
+        card.appendChild(actions);
+        card.appendChild(stepsList);
+      } else {
+        card.appendChild(actions);
+      }
+    } else {
+      var runBtn = document.createElement("button");
+      runBtn.type = "button";
+      runBtn.className = "btn";
+      runBtn.textContent = "Run";
+      runBtn.addEventListener("click", function () { runTest(c.id); });
+      actions.appendChild(runBtn);
+      card.appendChild(actions);
+
+      var resultBox = document.createElement("div");
+      resultBox.className = "test-result";
+      resultBox.hidden = true;
+      card.appendChild(resultBox);
+    }
+
+    return card;
+  }
+
+  function runTest(id) {
+    var card = cardByID[id];
+    if (!card) return;
+    if (card.dataset.status === "running") return;
+    setCardStatus(card, "running");
+    var resultBox = card.querySelector(".test-result");
+    if (resultBox) {
+      resultBox.hidden = true;
+      resultBox.innerHTML = "";
+    }
+    var btn = card.querySelector(".test-actions .btn");
+    if (btn) btn.disabled = true;
+
+    return fetch("/tests/run/" + encodeURIComponent(id), { method: "POST" })
+      .then(function (r) {
+        return r.json().then(function (body) {
+          if (!r.ok) throw new Error(body && body.error ? body.error : "HTTP " + r.status);
+          return body;
+        });
+      })
+      .then(function (res) {
+        renderResult(card, res);
+        setCardStatus(card, res.passed ? "pass" : "fail");
+      })
+      .catch(function (err) {
+        renderResult(card, { passed: false, expected: "—", actual: "request error", details: err.message });
+        setCardStatus(card, "fail");
+      })
+      .then(function () {
+        if (btn) btn.disabled = false;
+      });
+  }
+
+  function setCardStatus(card, status) {
+    card.dataset.status = status;
+    var badge = card.querySelector(".test-badge");
+    if (!badge) return;
+    badge.className = "test-badge test-badge-" + status;
+    badge.textContent = status;
+  }
+
+  function renderResult(card, res) {
+    var box = card.querySelector(".test-result");
+    if (!box) return;
+    box.hidden = false;
+    box.innerHTML = "";
+
+    var meta = document.createElement("div");
+    meta.className = "test-result-meta";
+    var ms = (res.duration_ms != null) ? (" · " + res.duration_ms + " ms") : "";
+    var sc = (res.status_code != null && res.status_code !== 0) ? (" · HTTP " + res.status_code) : "";
+    meta.textContent = (res.passed ? "PASS" : "FAIL") + ms + sc;
+    box.appendChild(meta);
+
+    if (res.expected) box.appendChild(kv("expected", res.expected));
+    if (res.actual)   box.appendChild(kv("actual",   res.actual));
+    if (res.details)  box.appendChild(kv("details",  res.details, true));
+
+    if (res.headers && Object.keys(res.headers).length) {
+      var hdrToggle = document.createElement("button");
+      hdrToggle.type = "button";
+      hdrToggle.className = "test-link";
+      hdrToggle.textContent = "show headers (" + Object.keys(res.headers).length + ")";
+      var hdrBlock = document.createElement("pre");
+      hdrBlock.className = "test-pre";
+      hdrBlock.hidden = true;
+      hdrBlock.textContent = Object.keys(res.headers).sort().map(function (k) {
+        return k + ": " + res.headers[k];
+      }).join("\n");
+      hdrToggle.addEventListener("click", function () {
+        hdrBlock.hidden = !hdrBlock.hidden;
+        hdrToggle.textContent = hdrBlock.hidden
+          ? "show headers (" + Object.keys(res.headers).length + ")"
+          : "hide headers";
+      });
+      box.appendChild(hdrToggle);
+      box.appendChild(hdrBlock);
+    }
+    if (res.body) {
+      var bodyToggle = document.createElement("button");
+      bodyToggle.type = "button";
+      bodyToggle.className = "test-link";
+      bodyToggle.textContent = "show body";
+      var bodyBlock = document.createElement("pre");
+      bodyBlock.className = "test-pre";
+      bodyBlock.hidden = true;
+      bodyBlock.textContent = res.body;
+      bodyToggle.addEventListener("click", function () {
+        bodyBlock.hidden = !bodyBlock.hidden;
+        bodyToggle.textContent = bodyBlock.hidden ? "show body" : "hide body";
+      });
+      box.appendChild(bodyToggle);
+      box.appendChild(bodyBlock);
+    }
+  }
+
+  function kv(label, value, multiline) {
+    var wrap = document.createElement("div");
+    wrap.className = "test-kv";
+    var k = document.createElement("span");
+    k.className = "test-kv-key";
+    k.textContent = label;
+    var v = document.createElement(multiline ? "pre" : "span");
+    v.className = multiline ? "test-pre" : "test-kv-val";
+    v.textContent = value;
+    wrap.appendChild(k);
+    wrap.appendChild(v);
+    return wrap;
+  }
+
+  function escapeHTML(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  if (btnRunAll) {
+    btnRunAll.addEventListener("click", function () {
+      if (runAllInFlight) return;
+      runAllInFlight = true;
+      btnRunAll.disabled = true;
+      var original = btnRunAll.textContent;
+      var autoCases = testCatalog.filter(function (c) { return !c.manual; });
+      var idx = 0;
+      function next() {
+        if (idx >= autoCases.length) {
+          runAllInFlight = false;
+          btnRunAll.disabled = false;
+          btnRunAll.textContent = original;
+          return;
+        }
+        var c = autoCases[idx++];
+        btnRunAll.textContent = "Running " + idx + "/" + autoCases.length + "…";
+        runTest(c.id).then(next, next);
+      }
+      next();
+    });
+  }
+
+  loadCatalog();
+
   connect();
 })();

@@ -130,17 +130,18 @@ func printSummary(results []attackResult, delivered map[string]int) {
 	fmt.Println()
 	fmt.Println("Load test summary")
 	fmt.Println("─────────────────")
-	fmt.Printf("%-22s %-6s %5s %5s %5s %5s %8s %8s\n",
-		"Profile", "Tier", "Reqs", "2xx", "4xx", "5xx", "p99(ms)", "Delivd")
+	fmt.Printf("%-22s %-6s %5s %5s %5s %5s %5s %8s %8s\n",
+		"Profile", "Tier", "Reqs", "2xx", "4xx", "5xx", "Err", "p99(ms)", "Delivd")
 	for _, r := range results {
 		hint := hintOf(r.Profile.Key)
-		fmt.Printf("%-22s %-6s %5d %5d %5d %5d %8d %8d\n",
+		fmt.Printf("%-22s %-6s %5d %5d %5d %5d %5d %8d %8d\n",
 			truncate(r.Profile.Name, 22),
 			r.Profile.Tier,
 			r.Metrics.Requests,
 			statusCount(r.Metrics, 2),
 			statusCount(r.Metrics, 4),
 			statusCount(r.Metrics, 5),
+			transportErrCount(r.Metrics),
 			r.Metrics.Latencies.P99.Milliseconds(),
 			delivered[hint],
 		)
@@ -157,6 +158,14 @@ func statusCount(m vegeta.Metrics, class int) uint64 {
 		}
 	}
 	return n
+}
+
+// transportErrCount totals attempts that never produced an HTTP status (DNS
+// failure, connect timeout, TLS handshake error, etc.). vegeta records these
+// under the empty-string status code; without this counter they vanished
+// from the summary because statusCount only matches "[2-5]xx".
+func transportErrCount(m vegeta.Metrics) uint64 {
+	return uint64(m.StatusCodes[""])
 }
 
 func truncate(s string, n int) string {

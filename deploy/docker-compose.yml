@@ -76,6 +76,10 @@ services:
       GF_SECURITY_ALLOW_EMBEDDING: "true"
       GF_AUTH_DISABLE_LOGIN_FORM: "false"
       GF_USERS_DEFAULT_THEME: dark
+      # Override Grafana's admin/admin default. Anyone copying this compose
+      # file into a less-local environment shouldn't ship the canonical
+      # password. Override locally with `GRAFANA_ADMIN_PASSWORD=... make dev`.
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-shortlink-local-dev}
     ports:
       - "3000:3000"
     volumes:

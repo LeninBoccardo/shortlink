@@ -28,10 +28,14 @@ spec:
       # Worker drain (asynq Shutdown + sweeper exit) needs DRAIN_TIMEOUT plus
       # a small buffer for in-flight HTTP webhook deliveries to finish.
       terminationGracePeriodSeconds: 60
+      securityContext:
+        {{- include "shortlink.podSecurityContext" . | nindent 8 }}
       containers:
         - name: worker
           image: {{ include "shortlink.image" (dict "Values" .Values "name" "worker") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "shortlink.containerSecurityContext" . | nindent 12 }}
           ports:
             - name: http
               containerPort: 8081

@@ -20,10 +20,23 @@ spec:
         {{- include "shortlink.componentLabels" (dict "root" . "component" "pgbouncer") | nindent 8 }}
     spec:
       terminationGracePeriodSeconds: 30
+      # The edoburu image runs as the `postgres` user (uid 70) and writes a
+      # generated /etc/pgbouncer/pgbouncer.ini at startup, so readOnlyRootFilesystem
+      # would break it. We still drop capabilities + privilege escalation and
+      # require non-root + RuntimeDefault seccomp.
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: pgbouncer
           image: "{{ .Values.pgbouncer.image.repository }}:{{ .Values.pgbouncer.image.tag }}"
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           ports:
             - name: pgbouncer
               containerPort: 6432

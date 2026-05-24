@@ -26,10 +26,14 @@ spec:
       # 30s grace gives the chi router time to finish in-flight requests
       # before the kubelet sends SIGKILL.
       terminationGracePeriodSeconds: 30
+      securityContext:
+        {{- include "shortlink.podSecurityContext" . | nindent 8 }}
       containers:
         - name: api
           image: {{ include "shortlink.image" (dict "Values" .Values "name" "api") }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "shortlink.containerSecurityContext" . | nindent 12 }}
           ports:
             - name: http
               containerPort: 8080

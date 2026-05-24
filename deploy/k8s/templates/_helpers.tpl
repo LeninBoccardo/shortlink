@@ -59,3 +59,33 @@ postgres://{{ .Values.postgres.user }}:{{ .Values.secrets.postgresPassword }}@{{
 {{- define "shortlink.image" -}}
 {{ .Values.image.repository }}-{{ .name }}:{{ .Values.image.tag }}
 {{- end -}}
+
+{{/*
+  Pod-level securityContext for the shortlink distroless nonroot binaries
+  (api, worker, observer, migrate). UID/GID 65532 is the `nonroot` user
+  baked into gcr.io/distroless/static-debian12:nonroot. Aligns with the
+  Pod Security "restricted" profile.
+*/}}
+{{- define "shortlink.podSecurityContext" -}}
+runAsNonRoot: true
+runAsUser: 65532
+runAsGroup: 65532
+fsGroup: 65532
+seccompProfile:
+  type: RuntimeDefault
+{{- end -}}
+
+{{/*
+  Container-level securityContext for the shortlink distroless binaries.
+  Drops every capability, disables privilege escalation, and locks the
+  rootfs read-only -- the binaries only need network + /tmp (none of the
+  workloads write to the local filesystem outside emptyDirs).
+*/}}
+{{- define "shortlink.containerSecurityContext" -}}
+allowPrivilegeEscalation: false
+readOnlyRootFilesystem: true
+runAsNonRoot: true
+capabilities:
+  drop:
+    - ALL
+{{- end -}}

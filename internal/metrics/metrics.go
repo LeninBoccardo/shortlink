@@ -59,9 +59,9 @@ var (
 
 	JobDurationSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "shortlink_job_duration_seconds",
-		Help:    "Asynq job execution duration per queue.",
+		Help:    "Asynq job execution duration per queue and terminal status.",
 		Buckets: prometheus.DefBuckets,
-	}, []string{"queue"})
+	}, []string{"queue", "status"})
 
 	QRGenerateDurationSeconds = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "shortlink_qr_generate_duration_seconds",
@@ -79,11 +79,11 @@ var (
 		Help: "Outbound webhook attempts by status.",
 	}, []string{"status"})
 
-	WebhookDurationSeconds = promauto.NewHistogram(prometheus.HistogramOpts{
+	WebhookDurationSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "shortlink_webhook_duration_seconds",
-		Help:    "Outbound webhook delivery duration.",
+		Help:    "Outbound webhook delivery duration by attempt status.",
 		Buckets: prometheus.DefBuckets,
-	})
+	}, []string{"status"})
 
 	ShortenRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "shortlink_shorten_requests_total",

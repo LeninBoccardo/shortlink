@@ -22,30 +22,34 @@ import (
 
 // handleShortenJob runs the shorten pipeline: claim -> slug -> QR -> upload ->
 // finalize -> enqueue webhook (SPEC §4.2).
-func (w *worker) handleShortenJob(ctx context.Context, payload []byte) error {
+func (w *worker) handleShortenJob(ctx context.Context, payload []byte) (err error) {
 	var p queue.ShortenJobPayload
-	if err := json.Unmarshal(payload, &p); err != nil {
-		return fmt.Errorf("unmarshal shorten payload: %w", err)
+	if e := json.Unmarshal(payload, &p); e != nil {
+		return fmt.Errorf("unmarshal shorten payload: %w", e)
 	}
 
 	// Claim the row. With asynq's single-delivery guarantee a processing row is
 	// this job's own prior attempt or a crashed worker — either way we take it
 	// over. The returned updated_at is the lease token guarding finalize/fail.
-	row, err := w.queries.ClaimShortURL(ctx, p.JobID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	row, claimErr := w.queries.ClaimShortURL(ctx, p.JobID)
+	if claimErr != nil {
+		if errors.Is(claimErr, pgx.ErrNoRows) {
 			return w.handleUnclaimable(ctx, p.JobID)
 		}
-		return fmt.Errorf("claim %s: %w", p.JobID, err)
+		return fmt.Errorf("claim %s: %w", p.JobID, claimErr)
 	}
 	lease := row.UpdatedAt
 
 	// Only start the timer once we have a real claim to work on: this keeps
 	// payload-parse failures (sub-ms) and unclaimable re-deliveries out of the
-	// duration histogram, where they would skew p99 toward zero.
+	// duration histogram, where they would skew p99 toward zero. Named return
+	// lets the defer label the observation by terminal status -- a single
+	// rate(...) slice can split complete/error/dlq latency from one another.
 	started := time.Now()
 	defer func() {
-		metrics.JobDurationSeconds.WithLabelValues(metrics.QueueShorten).Observe(time.Since(started).Seconds())
+		metrics.JobDurationSeconds.
+			WithLabelValues(metrics.QueueShorten, jobStatusFromErr(ctx, err)).
+			Observe(time.Since(started).Seconds())
 	}()
 
 	slug := p.CustomSlug
@@ -131,19 +135,19 @@ func (w *worker) handleUnclaimable(ctx context.Context, jobID string) error {
 // the client's webhook (SPEC §4.2/§8). On failure asynq retries per the §8
 // schedule and archives to the dead-letter set; the short_urls status is never
 // changed — the short URL was created, only delivery failed.
-func (w *worker) handleWebhookJob(ctx context.Context, payload []byte) error {
+func (w *worker) handleWebhookJob(ctx context.Context, payload []byte) (err error) {
 	var p queue.WebhookJobPayload
-	if err := json.Unmarshal(payload, &p); err != nil {
-		return fmt.Errorf("unmarshal webhook payload: %w", err)
+	if e := json.Unmarshal(payload, &p); e != nil {
+		return fmt.Errorf("unmarshal webhook payload: %w", e)
 	}
 
-	row, err := w.queries.GetShortURLByJobID(ctx, p.JobID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+	row, loadErr := w.queries.GetShortURLByJobID(ctx, p.JobID)
+	if loadErr != nil {
+		if errors.Is(loadErr, pgx.ErrNoRows) {
 			w.log.Warn("webhook job for unknown row, skipping", "job_id", p.JobID)
 			return nil
 		}
-		return fmt.Errorf("load %s: %w", p.JobID, err)
+		return fmt.Errorf("load %s: %w", p.JobID, loadErr)
 	}
 	if row.Status != "done" || !row.Slug.Valid || !row.QrObject.Valid {
 		w.log.Warn("webhook job for non-finalized row, skipping",
@@ -151,11 +155,14 @@ func (w *worker) handleWebhookJob(ctx context.Context, payload []byte) error {
 		return nil
 	}
 
-	// Timer starts only once we know we'll actually deliver: the no-op skip
-	// paths above are sub-ms and would skew p99 toward zero.
+	// Timer starts only once we know we'll actually deliver. Named return
+	// lets the defer label the observation by terminal status so dashboards
+	// can split complete/error/dlq webhook-job latency from each other.
 	started := time.Now()
 	defer func() {
-		metrics.JobDurationSeconds.WithLabelValues(metrics.QueueWebhook).Observe(time.Since(started).Seconds())
+		metrics.JobDurationSeconds.
+			WithLabelValues(metrics.QueueWebhook, jobStatusFromErr(ctx, err)).
+			Observe(time.Since(started).Seconds())
 	}()
 
 	apiKey, err := w.queries.GetAPIKeyByID(ctx, row.ApiKeyID)
@@ -194,7 +201,11 @@ func (w *worker) handleWebhookJob(ctx context.Context, payload []byte) error {
 	}
 	deliverStart := time.Now()
 	err = w.dispatcher.Deliver(ctx, row.WebhookUrl, apiKey.WebhookSecret, apiKey.KeyHint, body)
-	metrics.WebhookDurationSeconds.Observe(time.Since(deliverStart).Seconds())
+	webhookStatus := metrics.WebhookStatusSuccess
+	if err != nil {
+		webhookStatus = metrics.WebhookStatusFailure
+	}
+	metrics.WebhookDurationSeconds.WithLabelValues(webhookStatus).Observe(time.Since(deliverStart).Seconds())
 	if err != nil {
 		final := queue.IsLastAttempt(ctx)
 		if final {
@@ -300,4 +311,17 @@ func (w *worker) shortenFailed(ctx context.Context, p queue.ShortenJobPayload, l
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// jobStatusFromErr resolves the terminal-status label for the JobDuration
+// histogram. nil err = complete; an error on the final asynq attempt = dlq;
+// an error on an earlier attempt = error (asynq will retry).
+func jobStatusFromErr(ctx context.Context, err error) string {
+	if err == nil {
+		return metrics.JobStatusComplete
+	}
+	if queue.IsLastAttempt(ctx) {
+		return metrics.JobStatusDLQ
+	}
+	return metrics.JobStatusError
 }

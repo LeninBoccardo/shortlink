@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -24,6 +26,7 @@ var webFS embed.FS
 type pageServer struct {
 	indexHTML []byte
 	assets    fs.FS
+	csp       string
 }
 
 // newPageServer renders index.html with the runtime config baked in. The
@@ -67,7 +70,47 @@ func newPageServer(cfg runConfig) (*pageServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scope to web/: %w", err)
 	}
-	return &pageServer{indexHTML: buf.Bytes(), assets: assets}, nil
+	csp, err := buildCSP(buf.Bytes(), cfg.observerURL, cfg.grafanaURL)
+	if err != nil {
+		return nil, err
+	}
+	return &pageServer{indexHTML: buf.Bytes(), assets: assets, csp: csp}, nil
+}
+
+// buildCSP returns a Content-Security-Policy string tailored to the rendered
+// index. The inline <script> that injects window.SHORTLINK_CONFIG is allowed
+// via its sha256 hash (CSP3) so we don't need 'unsafe-inline'; connect-src
+// includes the observer WebSocket URL; frame-src includes the optional
+// Grafana base. Strict everywhere else.
+func buildCSP(html []byte, observerURL, grafanaURL string) (string, error) {
+	const openTag, closeTag = "<script>", "</script>"
+	start := bytes.Index(html, []byte(openTag))
+	end := bytes.Index(html, []byte(closeTag))
+	if start < 0 || end < 0 || start >= end {
+		return "", fmt.Errorf("inline <script> block not found in rendered index.html")
+	}
+	inline := html[start+len(openTag) : end]
+	sum := sha256.Sum256(inline)
+	scriptHash := "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
+
+	connect := []string{"'self'", observerWSURL(observerURL)}
+	if observerURL != "" {
+		connect = append(connect, observerURL)
+	}
+	frame := []string{"'self'"}
+	if grafanaURL != "" {
+		frame = append(frame, grafanaURL)
+	}
+	return strings.Join([]string{
+		"default-src 'none'",
+		"script-src 'self' " + scriptHash,
+		"style-src 'self'",
+		"img-src 'self' data:",
+		"connect-src " + strings.Join(connect, " "),
+		"frame-src " + strings.Join(frame, " "),
+		"form-action 'none'",
+		"base-uri 'none'",
+	}, "; "), nil
 }
 
 // routes returns an http.Handler that serves the rendered index at / and the
@@ -79,7 +122,13 @@ func (p *pageServer) routes() http.Handler {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Headers shared by both the templated index and the static-asset
+		// fallback: stop MIME sniffing and refuse to be framed.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
 		if r.URL.Path == "/" {
+			w.Header().Set("Content-Security-Policy", p.csp)
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-store")
 			_, _ = w.Write(p.indexHTML)

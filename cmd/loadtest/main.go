@@ -101,6 +101,22 @@ func run(cfg runConfig) error {
 	attackCtx, cancelAttack := context.WithTimeout(context.Background(), cfg.duration)
 	defer cancelAttack()
 
+	// Watch for signals or sink errors and cancel the attack early. This MUST
+	// run concurrently with runAttacks (which blocks for --duration); the old
+	// code had a non-blocking select after runAttacks, which meant SIGINT
+	// during the attack was silently ignored.
+	go func() {
+		select {
+		case sig := <-stop:
+			log.Info("interrupted, cancelling attack", "signal", sig.String())
+			cancelAttack()
+		case err := <-sinkErr:
+			log.Error("sink server failed, cancelling attack", "error", err)
+			cancelAttack()
+		case <-attackCtx.Done():
+		}
+	}()
+
 	emitter.Emit(events.Event{
 		Level:   events.LevelInfo,
 		Kind:    events.KindAttackStarted,
@@ -114,16 +130,6 @@ func run(cfg runConfig) error {
 	})
 
 	results := runAttacks(attackCtx, keys, cfg, emitter, log)
-
-	// Drain stop / sink errors briefly so the user can Ctrl-C mid-attack.
-	select {
-	case sig := <-stop:
-		log.Info("interrupted", "signal", sig.String())
-		cancelAttack()
-	case err := <-sinkErr:
-		return fmt.Errorf("sink server: %w", err)
-	default:
-	}
 
 	delivered := sink.counts()
 	rejected := sink.rejectedCounts()

@@ -86,6 +86,10 @@ config:
   queueDepthThreshold: 100
   ssrfAllowlist: ""   # comma-separated; empty = production-strict
   urlBlocklist: ""
+  # Comma-separated origins the observer's WebSocket upgrader trusts. The
+  # showcase page is not deployed in-cluster, so the default is empty
+  # (no /stream clients accepted).
+  observerAllowedOrigins: ""
 
 # KEDA worker autoscaler. KEDA itself is installed separately (not by this
 # chart); see deploy/k8s/README.md.

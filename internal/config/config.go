@@ -72,6 +72,10 @@ type Config struct {
 	// `Authorization: Bearer <token>` and every emitter (api/worker/loadtest)
 	// must be started with the same value so it can attach the header.
 	ObserverIngestToken string `env:"OBSERVER_INGEST_TOKEN"`
+	// ObserverAllowedOrigins is the comma-separated list of page origins the
+	// WebSocket upgrader trusts (cross-origin connect from the showcase page).
+	// Local default permits the loadtest showcase on :8090 over loopback.
+	ObserverAllowedOrigins []string `env:"OBSERVER_ALLOWED_ORIGINS" envSeparator:"," envDefault:"http://localhost:8090,http://127.0.0.1:8090"`
 
 	// Security
 	SSRFAllowlist []string `env:"SSRF_ALLOWLIST" envSeparator:","`

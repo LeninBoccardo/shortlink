@@ -78,7 +78,7 @@ func run() error {
 	}()
 	log.Info("redis poller started", "threshold", cfg.QueueDepthThreshold)
 
-	broadcaster := observer.NewBroadcaster(hub, log)
+	broadcaster := observer.NewBroadcaster(hub, log, cfg.ObserverAllowedOrigins)
 	mux := hub.Routes()
 	broadcaster.Register(mux)
 	broadcaster.Start()

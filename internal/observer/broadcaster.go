@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,28 +22,18 @@ const (
 	wsPingInterval    = 25 * time.Second
 )
 
-// allowedOrigins lists the page origins the WebSocket upgrader trusts. The
-// showcase page is served from :8090 (cmd/loadtest, SPEC §4.4) while the
-// observer listens on :9000, so the connection is cross-origin and gorilla's
-// default CheckOrigin would reject it.
-var allowedOrigins = map[string]bool{
-	"http://localhost:8090": true,
-	"http://127.0.0.1:8090": true,
-	"http://localhost:9000": true, // observer self-served test client
-	"http://127.0.0.1:9000": true,
-}
-
 // Broadcaster owns the WebSocket fan-out: it accepts /stream upgrades, sends
 // a one-time snapshot per new connection, and ticks every 500ms to push the
 // latest stats + any newly-appended log lines to all connected clients.
 type Broadcaster struct {
-	hub      *Hub
-	log      *slog.Logger
-	upgrader websocket.Upgrader
-	mu       sync.Mutex
-	clients  map[*client]struct{}
-	stop     chan struct{}
-	done     chan struct{}
+	hub            *Hub
+	log            *slog.Logger
+	upgrader       websocket.Upgrader
+	allowedOrigins map[string]bool
+	mu             sync.Mutex
+	clients        map[*client]struct{}
+	stop           chan struct{}
+	done           chan struct{}
 }
 
 type client struct {
@@ -60,26 +51,38 @@ func (c *client) close() {
 }
 
 // NewBroadcaster builds the broadcaster but does not start it — call Start
-// after Hub.Start so the aggregator is already draining /ingest.
-func NewBroadcaster(hub *Hub, log *slog.Logger) *Broadcaster {
-	return &Broadcaster{
-		hub: hub,
-		log: log,
-		upgrader: websocket.Upgrader{
-			ReadBufferSize:  1024,
-			WriteBufferSize: 4096,
-			CheckOrigin: func(r *http.Request) bool {
-				// Browsers always send Origin on WebSocket upgrades. Allowing
-				// an empty Origin would let any local process (wscat, curl)
-				// connect and harvest key hints / webhook URLs from the
-				// broadcast — so we require an explicit allowlisted Origin.
-				return allowedOrigins[r.Header.Get("Origin")]
-			},
-		},
-		clients: make(map[*client]struct{}),
-		stop:    make(chan struct{}),
-		done:    make(chan struct{}),
+// after Hub.Start so the aggregator is already draining /ingest. The
+// allowedOrigins list comes from OBSERVER_ALLOWED_ORIGINS; the showcase page
+// is cross-origin (page :8090 vs observer :9090), so gorilla's default
+// CheckOrigin would reject it.
+func NewBroadcaster(hub *Hub, log *slog.Logger, allowedOrigins []string) *Broadcaster {
+	allow := make(map[string]bool, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		o = strings.TrimSpace(o)
+		if o != "" {
+			allow[o] = true
+		}
 	}
+	b := &Broadcaster{
+		hub:            hub,
+		log:            log,
+		allowedOrigins: allow,
+		clients:        make(map[*client]struct{}),
+		stop:           make(chan struct{}),
+		done:           make(chan struct{}),
+	}
+	b.upgrader = websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 4096,
+		CheckOrigin: func(r *http.Request) bool {
+			// Browsers always send Origin on WebSocket upgrades. Allowing
+			// an empty Origin would let any local process (wscat, curl)
+			// connect and harvest key hints / webhook URLs from the
+			// broadcast — so we require an explicit allowlisted Origin.
+			return b.allowedOrigins[r.Header.Get("Origin")]
+		},
+	}
+	return b
 }
 
 // Register attaches the WS endpoint to the given mux. Call once before Start.

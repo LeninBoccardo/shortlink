@@ -449,14 +449,31 @@
     socket: function () { return ws; },
   };
 
-  // Surface the templated Grafana URL inside each placeholder so the M7
-  // wiring path is obvious without scrolling through source.
-  (function fillGrafanaSlots() {
+  // Point each slot's iframe at its provisioned Grafana dashboard. The uids
+  // (jobs-error-rate, qr-queue-depth) match the dashboard JSON committed in
+  // deploy/grafana/dashboards/. kiosk=tv hides the chrome; theme=dark blends
+  // into the showcase. If grafana_url is missing we mark the slot no-grafana
+  // and the CSS shows the fallback hint instead of a broken iframe.
+  (function wireGrafanaSlots() {
     var base = cfg.grafana_url || "";
-    var jobsURL = document.getElementById("grafana-jobs-url");
-    var qrURL = document.getElementById("grafana-qr-url");
-    if (jobsURL) jobsURL.textContent = base ? "will render: " + base + "/d/jobs-error-rate" : "";
-    if (qrURL) qrURL.textContent = base ? "will render: " + base + "/d/qr-queue-depth" : "";
+    var slots = document.querySelectorAll(".grafana-slot");
+    for (var i = 0; i < slots.length; i++) {
+      var slot = slots[i];
+      var iframe = slot.querySelector(".grafana-frame");
+      var fallback = slot.querySelector(".grafana-fallback");
+      if (!base) {
+        slot.classList.add("no-grafana");
+        if (fallback) fallback.textContent = "Grafana not configured (--grafana flag).";
+        continue;
+      }
+      slot.classList.remove("no-grafana");
+      var uid = iframe ? iframe.getAttribute("data-uid") : null;
+      if (iframe && uid) {
+        iframe.src = base.replace(/\/+$/, "") +
+          "/d/" + encodeURIComponent(uid) +
+          "?kiosk=tv&theme=dark&refresh=5s&from=now-15m&to=now";
+      }
+    }
   })();
 
   connect();

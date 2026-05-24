@@ -47,13 +47,13 @@
     <div class="grafana-grid">
       <div class="grafana-slot" id="grafana-jobs" data-panel="jobs-error-rate">
         <strong>jobs/sec · error rate</strong>
-        <p>Grafana iframe — wired in M7.</p>
-        <p class="hint" id="grafana-jobs-url"></p>
+        <iframe class="grafana-frame" data-uid="jobs-error-rate" title="Jobs · Error rate" loading="lazy"></iframe>
+        <p class="hint grafana-fallback" id="grafana-jobs-url">Grafana not configured.</p>
       </div>
       <div class="grafana-slot" id="grafana-qr" data-panel="qr-queue-depth">
         <strong>QR gen p99 · queue depth</strong>
-        <p>Grafana iframe — wired in M7.</p>
-        <p class="hint" id="grafana-qr-url"></p>
+        <iframe class="grafana-frame" data-uid="qr-queue-depth" title="QR latency · Queue depth" loading="lazy"></iframe>
+        <p class="hint grafana-fallback" id="grafana-qr-url">Grafana not configured.</p>
       </div>
     </div>
   </section>

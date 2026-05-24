@@ -30,6 +30,15 @@ type pageServer struct {
 // SHORTLINK_CONFIG object is a JSON literal injected into a top-of-page
 // <script> — app.js reads window.SHORTLINK_CONFIG synchronously on load.
 func newPageServer(cfg runConfig) (*pageServer, error) {
+	// Refuse to start with a malformed --grafana flag. The page injects the
+	// value as an iframe src; a javascript: URL would execute, and even
+	// well-formed http(s) URLs are sandbox-restricted by the embedded HTML.
+	// Empty is allowed -- the JS shows a fallback hint.
+	if cfg.grafanaURL != "" &&
+		!strings.HasPrefix(cfg.grafanaURL, "http://") &&
+		!strings.HasPrefix(cfg.grafanaURL, "https://") {
+		return nil, fmt.Errorf("--grafana must be http:// or https:// (got %q)", cfg.grafanaURL)
+	}
 	rawHTML, err := fs.ReadFile(webFS, "web/index.html")
 	if err != nil {
 		return nil, fmt.Errorf("read embedded index.html: %w", err)

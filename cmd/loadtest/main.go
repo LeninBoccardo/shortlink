@@ -134,7 +134,7 @@ func run(cfg runConfig) error {
 
 	delivered := sink.counts()
 	rejected := sink.rejectedCounts()
-	printSummary(results, delivered, log)
+	printSummary(results, delivered)
 
 	emitter.Emit(events.Event{
 		Level:   events.LevelInfo,

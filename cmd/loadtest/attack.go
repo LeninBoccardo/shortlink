@@ -126,7 +126,7 @@ func newTargeter(k keysfile.Entry, cfg runConfig) vegeta.Targeter {
 // printSummary renders a compact per-key results table after the attack ends.
 // Real users will read this from the showcase page (M6); this is the
 // CLI-only path for M5 smoke + manual runs.
-func printSummary(results []attackResult, delivered map[string]int, log *slog.Logger) {
+func printSummary(results []attackResult, delivered map[string]int) {
 	fmt.Println()
 	fmt.Println("Load test summary")
 	fmt.Println("─────────────────")
@@ -146,7 +146,6 @@ func printSummary(results []attackResult, delivered map[string]int, log *slog.Lo
 		)
 	}
 	fmt.Println()
-	_ = log
 }
 
 // statusCount totals vegeta.Metrics.StatusCodes whose first digit equals class.

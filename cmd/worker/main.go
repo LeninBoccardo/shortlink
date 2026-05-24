@@ -17,6 +17,7 @@ import (
 	"github.com/leninboccardo/shortlink/internal/db"
 	"github.com/leninboccardo/shortlink/internal/events"
 	"github.com/leninboccardo/shortlink/internal/httpx"
+	"github.com/leninboccardo/shortlink/internal/metrics"
 	"github.com/leninboccardo/shortlink/internal/queue"
 	"github.com/leninboccardo/shortlink/internal/security"
 	"github.com/leninboccardo/shortlink/internal/storage"
@@ -206,5 +207,6 @@ func healthHandler() http.Handler {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	mux.Handle("/metrics", metrics.Handler())
 	return mux
 }

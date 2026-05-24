@@ -17,6 +17,7 @@
     connText: document.getElementById("conn-text"),
     btnReset: document.getElementById("btn-reset"),
     btnClear: document.getElementById("btn-clear"),
+    keyTbody: document.getElementById("key-tbody"),
   };
 
   // ---------- connection indicator -----------------------------------------
@@ -137,12 +138,10 @@
   }
 
   function onSnapshot(frame) {
-    // eslint-disable-next-line no-console
-    console.log("snapshot:", (frame.key_stats || []).length, "keys,", (frame.logs || []).length, "logs");
+    renderKeyTable(frame.key_stats || []);
   }
   function onStats(frame) {
-    // eslint-disable-next-line no-console
-    console.log("stats:", (frame.key_stats || []).length, "keys");
+    renderKeyTable(frame.key_stats || []);
   }
   function onLogAppend(frame) {
     // eslint-disable-next-line no-console
@@ -151,6 +150,100 @@
   function onReset(frame) {
     // eslint-disable-next-line no-console
     console.log("reset:", frame.scope);
+  }
+
+  // ---------- key-stats table ---------------------------------------------
+  //
+  // SPEC §11:
+  //   - Table rows keyed by key_hash (NOT key_hint — two keys could share
+  //     the same last-6).
+  //   - Red highlight when limit_errors / total_reqs > 0.5.
+  //   - Hint shown as "..abc123" (last 6 chars).
+  //   - Unlimited tier rendered with a "∞" budget.
+  //
+  // We keep a per-hash <tr> cache so the broadcaster's 500ms tick re-uses
+  // existing rows and only touches the cells whose text changed. Cheap, no
+  // framework, no flicker.
+
+  var rowByHash = Object.create(null);
+
+  function renderKeyTable(keys) {
+    if (!els.keyTbody) return;
+    if (!keys.length) {
+      // Clear cache so a future reset_stats can rebuild cleanly.
+      rowByHash = Object.create(null);
+      els.keyTbody.innerHTML = '<tr class="empty"><td colspan="8">No keys seen yet.</td></tr>';
+      return;
+    }
+    // Drop the empty placeholder on first real render.
+    if (els.keyTbody.firstElementChild && els.keyTbody.firstElementChild.classList.contains("empty")) {
+      els.keyTbody.innerHTML = "";
+    }
+    // keys arrive already sorted by key_hash (observer/state.go Snapshot
+    // sorts before shipping); render in that order so row position is stable.
+    var seen = Object.create(null);
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      seen[k.key_hash] = true;
+      var tr = rowByHash[k.key_hash];
+      if (!tr) {
+        tr = buildKeyRow(k);
+        rowByHash[k.key_hash] = tr;
+        els.keyTbody.appendChild(tr);
+      } else {
+        updateKeyRow(tr, k);
+      }
+    }
+    // Evict rows for keys the observer no longer reports (e.g. after a
+    // reset_stats; or after the observer's idle-key eviction kicked in).
+    Object.keys(rowByHash).forEach(function (hash) {
+      if (!seen[hash]) {
+        els.keyTbody.removeChild(rowByHash[hash]);
+        delete rowByHash[hash];
+      }
+    });
+  }
+
+  function buildKeyRow(k) {
+    var tr = document.createElement("tr");
+    tr.dataset.keyHash = k.key_hash;
+    // Build all eight cells once; updateKeyRow swaps textContent.
+    ["key", "tier", "rl", "reqs", "wh", "lim", "err", "p99"].forEach(function (cls) {
+      var td = document.createElement("td");
+      td.className = (cls === "key" || cls === "tier" || cls === "rl")
+        ? "col-" + cls
+        : "col-num";
+      tr.appendChild(td);
+    });
+    updateKeyRow(tr, k);
+    return tr;
+  }
+
+  function updateKeyRow(tr, k) {
+    var cells = tr.children;
+    cells[0].textContent = "…" + (k.key_hint || "??????");
+    cells[1].textContent = k.tier || "-";
+    cells[2].textContent = formatRateLimit(k);
+    cells[3].textContent = formatInt(k.total_reqs);
+    cells[4].textContent = formatInt(k.webhooks);
+    cells[5].textContent = formatInt(k.limit_errors);
+    cells[6].textContent = formatInt(k.job_errors);
+    cells[7].textContent = formatLatency(k.p99_latency_ms);
+
+    // Red-highlight when majority of requests got rate-limited (SPEC §11).
+    var over = k.total_reqs > 0 && k.limit_errors / k.total_reqs > 0.5;
+    tr.classList.toggle("over-limit", over);
+  }
+
+  function formatRateLimit(k) {
+    if (k.rate_limit === 0) return "∞";       // unlimited
+    if (!k.rate_limit) return "-";
+    return k.rate_limit + "/min";
+  }
+  function formatInt(n) { return (typeof n === "number") ? String(n) : "0"; }
+  function formatLatency(ms) {
+    if (!ms) return "—";
+    return ms + " ms";
   }
 
   // ---------- kick off ----------------------------------------------------

@@ -73,6 +73,7 @@ func run(cfg runConfig) error {
 
 	emitter := events.NewEmitter(events.Config{
 		URL:    cfg.observerURL,
+		Token:  os.Getenv("OBSERVER_INGEST_TOKEN"),
 		Source: events.SourceLoadtest,
 		Logger: log,
 	})

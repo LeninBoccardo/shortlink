@@ -70,6 +70,7 @@ type Event struct {
 // Emitter ships events to the observer hub asynchronously.
 type Emitter struct {
 	url    string
+	token  string
 	source string
 	client *http.Client
 	log    *slog.Logger
@@ -82,6 +83,7 @@ type Emitter struct {
 // Config tunes the emitter buffer + HTTP timeout. Sensible defaults are applied.
 type Config struct {
 	URL        string        // base URL of the observer (e.g. http://localhost:9000)
+	Token      string        // OBSERVER_INGEST_TOKEN; sent as Authorization: Bearer
 	Source     string        // SourceAPI / SourceWorker / ...
 	BufferSize int           // bounded channel size; default 256
 	Timeout    time.Duration // per-POST timeout; default 500ms
@@ -102,6 +104,7 @@ func NewEmitter(cfg Config) *Emitter {
 	}
 	e := &Emitter{
 		url:    cfg.URL,
+		token:  cfg.Token,
 		source: cfg.Source,
 		client: &http.Client{Timeout: cfg.Timeout},
 		log:    cfg.Logger,
@@ -195,6 +198,9 @@ func (e *Emitter) send(ev Event) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if e.token != "" {
+		req.Header.Set("Authorization", "Bearer "+e.token)
+	}
 	resp, err := e.client.Do(req)
 	if err != nil {
 		// Observer unreachable. Expected when the observer isn't running yet.

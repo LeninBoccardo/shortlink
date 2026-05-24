@@ -63,8 +63,11 @@ func run() error {
 	inspector := asynq.NewInspector(asynqOpt)
 	defer inspector.Close()
 
-	hub := observer.NewHub(log)
+	hub := observer.NewHub(cfg.ObserverIngestToken, log)
 	hub.Start()
+	if cfg.ObserverIngestToken == "" {
+		log.Warn("OBSERVER_INGEST_TOKEN unset — /ingest is open to any client (local-dev default)")
+	}
 
 	pollerCtx, stopPoller := context.WithCancel(context.Background())
 	defer stopPoller()

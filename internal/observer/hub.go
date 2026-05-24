@@ -2,10 +2,12 @@ package observer
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -22,23 +24,28 @@ const IngestBuffer = 1000
 // goroutines that consume/prune it. Routes are registered on an http.ServeMux
 // returned by Routes().
 type Hub struct {
-	state    *State
-	ch       chan events.Event
-	log      *slog.Logger
-	stop     chan struct{}
-	done     chan struct{}
-	dropped  atomic.Int64
-	received atomic.Int64
+	state       *State
+	ch          chan events.Event
+	log         *slog.Logger
+	ingestToken string
+	stop        chan struct{}
+	done        chan struct{}
+	dropped     atomic.Int64
+	received    atomic.Int64
+	rejected    atomic.Int64
 }
 
-// NewHub returns a Hub with a fresh State. Call Start to launch the aggregator.
-func NewHub(log *slog.Logger) *Hub {
+// NewHub returns a Hub with a fresh State. ingestToken is the required value
+// of the Authorization: Bearer header on /ingest; empty string keeps /ingest
+// open (the local-dev default).
+func NewHub(ingestToken string, log *slog.Logger) *Hub {
 	return &Hub{
-		state: NewState(),
-		ch:    make(chan events.Event, IngestBuffer),
-		log:   log,
-		stop:  make(chan struct{}),
-		done:  make(chan struct{}),
+		state:       NewState(),
+		ch:          make(chan events.Event, IngestBuffer),
+		log:         log,
+		ingestToken: ingestToken,
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
 	}
 }
 
@@ -122,6 +129,11 @@ func (h *Hub) handleIngest(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	if !h.checkIngestAuth(r) {
+		h.rejected.Add(1)
+		httpx.WriteError(w, http.StatusUnauthorized, "missing or invalid ingest token")
+		return
+	}
 	var ev events.Event
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&ev); err != nil {
 		httpx.WriteError(w, http.StatusBadRequest, "malformed JSON event")
@@ -148,6 +160,20 @@ func (h *Hub) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// checkIngestAuth returns true iff the request carries the expected bearer
+// token, or if no token was configured (local-dev default — /ingest open).
+// Constant-time compare so we don't leak token-byte info via timing.
+func (h *Hub) checkIngestAuth(r *http.Request) bool {
+	if h.ingestToken == "" {
+		return true
+	}
+	got, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !ok {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(h.ingestToken)) == 1
+}
+
 // handleMetrics is the Prometheus stub for M4. Full collectors land in M7 —
 // for now we only expose the one counter SPEC §4.3 explicitly names.
 func (h *Hub) handleMetrics(w http.ResponseWriter, _ *http.Request) {
@@ -158,6 +184,9 @@ func (h *Hub) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 		"observer_events_dropped_total " + strconv.FormatInt(h.dropped.Load(), 10) + "\n" +
 		"# HELP observer_events_received_total Events accepted at /ingest.\n" +
 		"# TYPE observer_events_received_total counter\n" +
-		"observer_events_received_total " + strconv.FormatInt(h.received.Load(), 10) + "\n"
+		"observer_events_received_total " + strconv.FormatInt(h.received.Load(), 10) + "\n" +
+		"# HELP observer_events_rejected_total Ingest requests rejected for bad auth.\n" +
+		"# TYPE observer_events_rejected_total counter\n" +
+		"observer_events_rejected_total " + strconv.FormatInt(h.rejected.Load(), 10) + "\n"
 	_, _ = w.Write([]byte(body))
 }

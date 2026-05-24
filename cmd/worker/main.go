@@ -95,6 +95,7 @@ func run() error {
 
 	emitter := events.NewEmitter(events.Config{
 		URL:    cfg.ObserverURL,
+		Token:  cfg.ObserverIngestToken,
 		Source: events.SourceWorker,
 		Logger: log,
 	})

@@ -67,6 +67,11 @@ type Config struct {
 	ObserverPort        int    `env:"OBSERVER_PORT" envDefault:"9090"`
 	QueueDepthThreshold int64  `env:"QUEUE_DEPTH_THRESHOLD" envDefault:"100"`
 	PodID               string `env:"POD_ID"`
+	// ObserverIngestToken gates POST /ingest. Empty (the local-dev default)
+	// keeps /ingest open. When set, the observer requires
+	// `Authorization: Bearer <token>` and every emitter (api/worker/loadtest)
+	// must be started with the same value so it can attach the header.
+	ObserverIngestToken string `env:"OBSERVER_INGEST_TOKEN"`
 
 	// Security
 	SSRFAllowlist []string `env:"SSRF_ALLOWLIST" envSeparator:","`

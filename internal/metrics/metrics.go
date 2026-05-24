@@ -33,6 +33,7 @@ const (
 
 	RateDecisionAllowed = "allowed"
 	RateDecisionLimited = "limited"
+	RateDecisionError   = "error"
 
 	WebhookStatusSuccess = "success"
 	WebhookStatusFailure = "failure"

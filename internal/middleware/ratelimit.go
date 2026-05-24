@@ -52,7 +52,10 @@ func RateLimit(rl *auth.RateLimiter, limitFor LimitForTier, em *events.Emitter, 
 			dec, err := rl.Check(ctx, key.KeyHash, limit, chimw.GetReqID(ctx))
 			if err != nil {
 				// Fail open on Redis errors — do not block traffic on a Redis blip.
+				// Record the decision so dashboards can see "allowed but only because
+				// the limiter was unavailable" rather than silently undercounting.
 				log.Error("rate limit check", "error", err)
+				metrics.RateLimitHitsTotal.WithLabelValues(key.Tier, metrics.RateDecisionError).Inc()
 				next.ServeHTTP(w, r)
 				return
 			}

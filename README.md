@@ -4,8 +4,9 @@ A production-grade, observable URL shortening platform built in Go — a
 portfolio demonstration of distributed systems, async processing, Kubernetes
 orchestration, and real-time observability.
 
-See [SPEC.md](SPEC.md) for the full design. The project is built milestone by
-milestone (SPEC §17).
+See [docs/SPEC.md](docs/SPEC.md) for the full design, [docs/DECISIONS.md](docs/DECISIONS.md)
+for the design-decision log, and [docs/AUDIT.md](docs/AUDIT.md) for deferred
+audit findings. The project is built milestone by milestone (SPEC §17).
 
 ## Status
 

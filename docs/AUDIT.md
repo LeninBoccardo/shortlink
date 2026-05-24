@@ -12,6 +12,7 @@ recorded, plus a rough confidence.
 | 2026-05-23 | M3+M4+M5       | commits `6941fc3..1307dc7` — P8, P9, P10, B6, B8, B10, B13, B14, D2, D4, D5, D8, S2, S3, S5 | B11 (re-reviewed and rejected — analysis was wrong) |
 | 2026-05-24 | M7             | commits `2a66607..1935b4e` — B1+B7, B2+B4, B3, B5+D1, B6, S1, S2, D2 (all 11 in-scope findings) | none |
 | 2026-05-24 | M8+M9          | not separately audited — M8 chart was written by inspection (helm/kind not installed locally to render-verify), M9 is text + the integration test under tests/ which is its own form of validation | M8 pod-eviction smoke (needs a real cluster) |
+| 2026-05-24 | post-M9 full repo + SPEC coverage | commits `ae172a0..d2c72d4` — B1, B2, B3, B5, B6, B7, B8, B9, COV-4, COV-5, COV-18, S1, S2, S3, S4, P5, P1+B4 (bundled), D1, D5, D6, D7, D9; SPEC drift in `d2c72d4` (COV-1, 2, 3-drop, 6, 7, 8, 9, 10, 11, 12, 14, 15, 17, 19) | B10 (verified false positive — vegeta.Stop is sync.Once-guarded), B4 (verified benign — ObjectKey deterministic from jobID) |
 
 > M3+M4+M5 audit findings B7, B9, B12, P12, P13, P15, P17, S4, S6, S7, S8,
 > S9, S10, D6, D7, D9 were investigated and rejected as not real issues —

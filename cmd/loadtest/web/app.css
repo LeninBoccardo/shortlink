@@ -115,6 +115,7 @@ html, body {
 }
 .grafana-slot strong { color: var(--text); display: block; margin-bottom: 4px; font-size: 13px; }
 .grafana-slot p { margin: 0; font-size: 12px; }
+.grafana-slot p.hint { margin-top: 8px; font-family: var(--mono); font-size: 11px; color: var(--grey); }
 
 .log-list {
   list-style: none;

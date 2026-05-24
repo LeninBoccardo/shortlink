@@ -17,7 +17,7 @@
     <div class="status">
       <span id="conn-indicator" class="conn conn-init" title="WebSocket status">●</span>
       <span id="conn-text">Initializing</span>
-      <button id="btn-reset" class="btn" disabled>Reset stats</button>
+      <button type="button" id="btn-reset" class="btn" disabled>Reset stats</button>
     </div>
   </header>
 
@@ -45,13 +45,15 @@
   <section class="panel" id="panel-monitoring">
     <h2>Monitoring <span class="hint">embedded Grafana panels</span></h2>
     <div class="grafana-grid">
-      <div class="grafana-slot" id="grafana-jobs">
-        <strong>jobs/sec, error rate</strong>
+      <div class="grafana-slot" id="grafana-jobs" data-panel="jobs-error-rate">
+        <strong>jobs/sec · error rate</strong>
         <p>Grafana iframe — wired in M7.</p>
+        <p class="hint" id="grafana-jobs-url"></p>
       </div>
-      <div class="grafana-slot" id="grafana-qr">
-        <strong>QR gen p99, queue depth</strong>
+      <div class="grafana-slot" id="grafana-qr" data-panel="qr-queue-depth">
+        <strong>QR gen p99 · queue depth</strong>
         <p>Grafana iframe — wired in M7.</p>
+        <p class="hint" id="grafana-qr-url"></p>
       </div>
     </div>
   </section>
@@ -63,7 +65,7 @@
         <label>Source <select id="filter-source"><option value="">all</option></select></label>
         <label>Level <select id="filter-level"><option value="">all</option></select></label>
         <label>Key <select id="filter-key"><option value="">all</option></select></label>
-        <button id="btn-clear" class="btn" disabled>Clear logs</button>
+        <button type="button" id="btn-clear" class="btn" disabled>Clear logs</button>
       </span>
     </h2>
     <ul id="log-list" class="log-list">

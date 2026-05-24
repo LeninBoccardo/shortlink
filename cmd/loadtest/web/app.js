@@ -449,5 +449,15 @@
     socket: function () { return ws; },
   };
 
+  // Surface the templated Grafana URL inside each placeholder so the M7
+  // wiring path is obvious without scrolling through source.
+  (function fillGrafanaSlots() {
+    var base = cfg.grafana_url || "";
+    var jobsURL = document.getElementById("grafana-jobs-url");
+    var qrURL = document.getElementById("grafana-qr-url");
+    if (jobsURL) jobsURL.textContent = base ? "will render: " + base + "/d/jobs-error-rate" : "";
+    if (qrURL) qrURL.textContent = base ? "will render: " + base + "/d/qr-queue-depth" : "";
+  })();
+
   connect();
 })();

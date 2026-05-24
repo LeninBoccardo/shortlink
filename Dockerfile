@@ -3,7 +3,9 @@
 # Build a specific binary:
 #   docker build --build-arg BINARY=worker -t shortlink-worker:dev .
 #
-# Valid BINARY values: api, worker, observer, loadtest, migrate, keygen.
+# Valid BINARY values: api, worker, observer, migrate. The loadtest and
+# keygen CLIs are local-only tools that ship via `go run` / `go build` -- no
+# container image is built for them by `make images`.
 # CGO is off so the runtime stage is a static-distroless image and the
 # build cache is shared across all binaries via the same go mod download.
 

@@ -80,7 +80,6 @@ func RateLimit(rl *auth.RateLimiter, limitFor LimitForTier, em *events.Emitter, 
 					},
 				})
 				metrics.RateLimitHitsTotal.WithLabelValues(key.Tier, metrics.RateDecisionLimited).Inc()
-				metrics.ShortenRequestsTotal.WithLabelValues(metrics.ShortenStatusRejectedRateLimit).Inc()
 				httpx.WriteError(w, http.StatusTooManyRequests, "rate limit exceeded")
 				return
 			}

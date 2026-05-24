@@ -41,6 +41,9 @@ const (
 	ShortenStatusRejectedAuth       = "rejected_auth"
 	ShortenStatusRejectedRateLimit  = "rejected_rate_limit"
 	ShortenStatusRejectedValidation = "rejected_validation"
+	ShortenStatusRejectedConflict   = "rejected_conflict"
+	ShortenStatusInternalError      = "internal_error"
+	ShortenStatusUnknown            = "unknown"
 
 	SourceAPI      = "api"
 	SourceWorker   = "worker"

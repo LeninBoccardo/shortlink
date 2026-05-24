@@ -62,19 +62,29 @@ spec:
           port: 9090
 
     # 3. Redis + MinIO live in the same namespace as the chart in the
-    #    demo cluster. Targeting them by name only requires a Service of
-    #    that name; the operator provides those out-of-chart.
+    #    demo cluster. Selectors come from values.yaml so an operator
+    #    deploying multiple redis/minio instances per namespace can pin
+    #    the policy to the right one (e.g. add app.kubernetes.io/instance).
+    #    The explicit namespaceSelector restricts to the release namespace
+    #    even though podSelector-only would default there -- being explicit
+    #    keeps the intent obvious for reviewers.
     - to:
-        - podSelector:
+        - namespaceSelector:
             matchLabels:
-              app: redis
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.redisSelector | nindent 14 }}
       ports:
         - protocol: TCP
           port: 6379
     - to:
-        - podSelector:
+        - namespaceSelector:
             matchLabels:
-              app: minio
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.minioSelector | nindent 14 }}
       ports:
         - protocol: TCP
           port: 9000

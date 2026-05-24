@@ -112,3 +112,14 @@ keda:
 # NetworkPolicy (Calico, Cilium). The default Calico-on-kind setup works.
 networkPolicy:
   enabled: true
+  # Selectors for the out-of-chart redis / minio Pods the worker needs to
+  # reach. Bare `app: redis` would match every redis Pod sharing the
+  # namespace; if you run more than one (multi-tenant cluster, blue/green),
+  # tighten this to your specific instance label, e.g.
+  #   redisSelector:
+  #     app: redis
+  #     app.kubernetes.io/instance: shortlink-redis
+  redisSelector:
+    app: redis
+  minioSelector:
+    app: minio

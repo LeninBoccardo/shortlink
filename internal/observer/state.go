@@ -68,14 +68,21 @@ type SystemStat struct {
 
 // State is the observer's mutable shared state. Read it via methods only
 // (snapshot helpers below) — they take the mutex.
+//
+// `logs` is a true circular buffer: `logs` is pre-allocated to LogRingSize
+// at NewState and never reallocated; `logHead` points at the next write
+// slot; `logCount` is the number of valid entries (0..LogRingSize). This
+// makes appendLog O(1) without per-event allocation.
 type State struct {
 	mu          sync.Mutex
 	startedAt   time.Time
 	keyStats    map[string]*KeyStat
-	logs        []LogEntry // newest-first ring buffer, max LogRingSize
+	logs        []LogEntry
+	logHead     int
+	logCount    int
 	system      SystemStat
 	updatedAt   time.Time
-	logsAppendN int64 // tail-cursor for broadcaster diff (logs since last tick)
+	logsAppendN int64 // monotonic cursor for broadcaster diff (logs since last tick)
 }
 
 // Tunables (SPEC §4.3).
@@ -128,7 +135,7 @@ func NewState() *State {
 	return &State{
 		startedAt: time.Now(),
 		keyStats:  make(map[string]*KeyStat),
-		logs:      make([]LogEntry, 0, LogRingSize),
+		logs:      make([]LogEntry, LogRingSize),
 		updatedAt: time.Now(),
 	}
 }
@@ -190,7 +197,9 @@ func (s *State) appendLog(ev events.Event, now time.Time) {
 	if ttl == 0 {
 		ttl = defaultLogTTL
 	}
-	entry := LogEntry{
+	// Overwrite the next slot in the ring. The previous entry's Meta map is
+	// now unreferenced and eligible for GC.
+	s.logs[s.logHead] = LogEntry{
 		ID:         ev.ID,
 		Timestamp:  ev.Timestamp,
 		ExpiresAt:  now.Add(ttl),
@@ -202,12 +211,20 @@ func (s *State) appendLog(ev events.Event, now time.Time) {
 		Message:    ev.Message,
 		Meta:       ev.Meta,
 	}
-	// Prepend (newest-first); cap at LogRingSize.
-	s.logs = append([]LogEntry{entry}, s.logs...)
-	if len(s.logs) > LogRingSize {
-		s.logs = s.logs[:LogRingSize]
+	s.logHead = (s.logHead + 1) % LogRingSize
+	if s.logCount < LogRingSize {
+		s.logCount++
 	}
 	s.logsAppendN++
+}
+
+// logIndex maps the i-th newest entry (0 = newest) to its position in the
+// ring. Returns -1 if i is out of range.
+func (s *State) logIndex(i int) int {
+	if i < 0 || i >= s.logCount {
+		return -1
+	}
+	return (s.logHead - 1 - i + LogRingSize) % LogRingSize
 }
 
 // Prune drops expired log entries and old latency samples. Call periodically
@@ -215,14 +232,27 @@ func (s *State) appendLog(ev events.Event, now time.Time) {
 func (s *State) Prune(now time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.logs) > 0 {
-		live := s.logs[:0]
-		for _, l := range s.logs {
-			if !now.After(l.ExpiresAt) {
-				live = append(live, l)
+	if s.logCount > 0 {
+		// Per-kind TTLs mean entries don't expire in chronological order, so
+		// we can't early-stop on the first non-expired entry. Walk the ring
+		// oldest→newest, collect survivors, then re-pack into the start.
+		// One kept slice allocated per tick (every 100ms) — versus the old
+		// implementation's per-event ring copy.
+		kept := make([]LogEntry, 0, s.logCount)
+		tail := (s.logHead - s.logCount + LogRingSize) % LogRingSize
+		for i := 0; i < s.logCount; i++ {
+			idx := (tail + i) % LogRingSize
+			if !now.After(s.logs[idx].ExpiresAt) {
+				kept = append(kept, s.logs[idx])
 			}
 		}
-		s.logs = live
+		n := copy(s.logs[:], kept)
+		// Zero remaining slots so dropped entries' Meta maps can be GC'd.
+		for i := n; i < s.logCount; i++ {
+			s.logs[i] = LogEntry{}
+		}
+		s.logHead = n % LogRingSize
+		s.logCount = n
 	}
 	cutoff := now.Add(-LatencyWindow)
 	for _, ks := range s.keyStats {
@@ -265,7 +295,11 @@ func (s *State) SetQueueDepth(n int64) {
 // command). The broadcaster sends every connected client a reset frame.
 func (s *State) clearLogs() {
 	s.mu.Lock()
-	s.logs = s.logs[:0]
+	for i := 0; i < s.logCount; i++ {
+		s.logs[i] = LogEntry{}
+	}
+	s.logHead = 0
+	s.logCount = 0
 	s.mu.Unlock()
 }
 
@@ -281,7 +315,7 @@ func (s *State) resetStats() {
 }
 
 // Snapshot returns deep copies safe to ship over the wire without holding the
-// lock. Callers must not mutate the result.
+// lock. Callers must not mutate the result. Logs are returned newest-first.
 func (s *State) Snapshot() (keys []KeyStat, logs []LogEntry, system SystemStat, ts time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -292,13 +326,16 @@ func (s *State) Snapshot() (keys []KeyStat, logs []LogEntry, system SystemStat, 
 		keys = append(keys, ksCopy)
 	}
 	sort.Slice(keys, func(i, j int) bool { return keys[i].KeyHash < keys[j].KeyHash })
-	logs = make([]LogEntry, len(s.logs))
-	copy(logs, s.logs)
+	logs = make([]LogEntry, s.logCount)
+	for i := 0; i < s.logCount; i++ {
+		logs[i] = s.logs[s.logIndex(i)]
+	}
 	return keys, logs, s.system, s.updatedAt
 }
 
-// LogsSince returns all log entries appended after lastSeenN, and the new
-// cursor value. Used by the broadcaster to send only the delta each tick.
+// LogsSince returns up to (cursor - lastSeenN) newest log entries, and the
+// new cursor. Used by the broadcaster to ship only the delta each tick.
+// Returned logs are newest-first, matching Snapshot.
 func (s *State) LogsSince(lastSeenN int64) (logs []LogEntry, cursor int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -306,12 +343,14 @@ func (s *State) LogsSince(lastSeenN int64) (logs []LogEntry, cursor int64) {
 	if lastSeenN >= cursor {
 		return nil, cursor
 	}
-	delta := cursor - lastSeenN
-	if delta > int64(len(s.logs)) {
-		delta = int64(len(s.logs))
+	delta := int(cursor - lastSeenN)
+	if delta > s.logCount {
+		delta = s.logCount
 	}
 	logs = make([]LogEntry, delta)
-	copy(logs, s.logs[:delta])
+	for i := 0; i < delta; i++ {
+		logs[i] = s.logs[s.logIndex(i)]
+	}
 	return logs, cursor
 }
 

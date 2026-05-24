@@ -15,6 +15,10 @@
 # Local environment overrides
 .env
 .claude/
+
+# scripts/local-setup.* runtime state
+/.shortlink-pids
+/logs/
 # OS / editor cruft
 .DS_Store
 Thumbs.db

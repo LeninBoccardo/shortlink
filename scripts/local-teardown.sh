@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Stops everything scripts/local-setup.sh brought up. Same shape as the
+# PowerShell version; see scripts/local-teardown.ps1 for the description.
+#
+# Flags:
+#   --keep-logs   leave ./logs/ in place after stopping the binaries
+#   --keep-data   skip `docker compose down -v` (preserve Postgres/MinIO)
+set -uo pipefail
+
+KEEP_LOGS=0
+KEEP_DATA=0
+for arg in "$@"; do
+    case "$arg" in
+        --keep-logs) KEEP_LOGS=1 ;;
+        --keep-data) KEEP_DATA=1 ;;
+        *) echo "unknown flag: $arg" >&2; exit 64 ;;
+    esac
+done
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(dirname -- "$SCRIPT_DIR")"
+cd "$REPO_ROOT"
+
+PID_FILE="$REPO_ROOT/.shortlink-pids"
+LOG_DIR="$REPO_ROOT/logs"
+
+if [ -t 1 ]; then CYAN='\033[36m'; GREEN='\033[32m'; DIM='\033[2m'; RESET='\033[0m'; else CYAN=''; GREEN=''; DIM=''; RESET=''; fi
+step() { printf "\n${CYAN}==> %s${RESET}\n" "$*"; }
+sub()  { printf "${DIM}    %s${RESET}\n" "$*"; }
+
+step "Stopping host binaries"
+if [ -f "$PID_FILE" ]; then
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        name=$(echo "$line" | awk '{print $1}')
+        pid=$(echo  "$line" | awk '{print $2}')
+        if ! kill -0 "$pid" 2>/dev/null; then
+            sub "$name (PID $pid) already gone"
+            continue
+        fi
+        sub "$name (PID $pid) -> stopping"
+        kill "$pid" 2>/dev/null || true
+        # Wait up to 5s for a clean exit, then SIGKILL.
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.5
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -9 "$pid" 2>/dev/null || true
+        fi
+    done < "$PID_FILE"
+    rm -f "$PID_FILE"
+else
+    sub "No .shortlink-pids file -- nothing to kill"
+fi
+
+step "Bringing the docker compose stack down"
+if [ "$KEEP_DATA" -eq 1 ]; then
+    docker compose -f deploy/docker-compose.yml down
+else
+    docker compose -f deploy/docker-compose.yml down -v
+fi
+
+if [ "$KEEP_LOGS" -ne 1 ] && [ -d "$LOG_DIR" ]; then
+    step "Removing ./logs/"
+    rm -rf "$LOG_DIR"
+fi
+
+printf "\n${GREEN}Teardown complete.${RESET}\n"

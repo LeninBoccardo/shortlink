@@ -187,11 +187,33 @@ func (w *worker) handleWebhookJob(ctx context.Context, payload []byte) (err erro
 		w.log.Warn("stat qr object", "error", err, "job_id", p.JobID)
 	}
 
-	// Re-validate the webhook URL — DNS may have changed since enqueue.
+	// Re-validate the webhook URL — DNS may have changed since enqueue. A
+	// rebound/poisoned host that now resolves into RFC1918 must NOT silently
+	// succeed (the previous return nil dropped the failure on the floor); emit
+	// a webhook_failed event and return the error so asynq retries / DLQs it.
 	if err := w.ssrf.ValidateURL(ctx, row.WebhookUrl); err != nil {
-		w.log.Error("webhook url failed SSRF re-validation, skipping delivery",
-			"job_id", p.JobID, "error", err)
-		return nil
+		final := queue.IsLastAttempt(ctx)
+		w.log.Error("webhook url failed SSRF re-validation",
+			"job_id", p.JobID, "error", err, "final_attempt", final)
+		w.emitter.Emit(events.Event{
+			Level:      events.LevelError,
+			Kind:       events.KindWebhookFailed,
+			APIKeyHash: apiKey.KeyHash,
+			APIKeyHint: apiKey.KeyHint,
+			Message:    "webhook url failed SSRF re-validation",
+			Meta: map[string]any{
+				"job_id":        p.JobID,
+				"error_class":   "ssrf_revalidate_failed",
+				"final_attempt": final,
+			},
+		})
+		metrics.WebhookAttemptsTotal.WithLabelValues(metrics.WebhookStatusFailure).Inc()
+		if final {
+			metrics.JobsTotal.WithLabelValues(metrics.QueueWebhook, metrics.JobStatusDLQ).Inc()
+		} else {
+			metrics.JobsTotal.WithLabelValues(metrics.QueueWebhook, metrics.JobStatusError).Inc()
+		}
+		return fmt.Errorf("ssrf re-validate %s: %w", p.JobID, err)
 	}
 
 	body := webhook.Payload{

@@ -166,7 +166,7 @@ func run(cfg runConfig) error {
 		},
 	})
 
-	results := runAttacks(attackCtx, keys, cfg, emitter, log)
+	results := runAttacks(attackCtx, keys, cfg, log)
 
 	delivered := sink.counts()
 	rejected := sink.rejectedCounts()

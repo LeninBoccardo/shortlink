@@ -12,7 +12,6 @@ import (
 
 	vegeta "github.com/tsenart/vegeta/v12/lib"
 
-	"github.com/leninboccardo/shortlink/internal/events"
 	"github.com/leninboccardo/shortlink/internal/keysfile"
 )
 
@@ -43,7 +42,7 @@ type attackResult struct {
 // runAttacks fans one vegeta.Attacker out per key profile and waits for them
 // all to finish (or for ctx to fire). Attackers are independent — one slow
 // upstream tier doesn't hold up the others.
-func runAttacks(ctx context.Context, keys *keysfile.File, cfg runConfig, _ *events.Emitter, log *slog.Logger) []attackResult {
+func runAttacks(ctx context.Context, keys *keysfile.File, cfg runConfig, log *slog.Logger) []attackResult {
 	results := make([]attackResult, len(keys.Keys))
 	var wg sync.WaitGroup
 	for i, k := range keys.Keys {

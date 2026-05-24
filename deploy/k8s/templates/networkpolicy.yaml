@@ -1,0 +1,104 @@
+{{- if .Values.networkPolicy.enabled }}
+# SPEC §9 / §12: defense-in-depth for the SSRF guard. Customer-supplied
+# webhook URLs ARE re-validated against an allowlist in code, but a
+# NetworkPolicy at the cluster boundary makes a code-side bypass non-fatal:
+# even if validation lets a private URL slip through, the worker pod cannot
+# reach it.
+#
+# Requires a NetworkPolicy-enforcing CNI (Calico, Cilium, etc.). kind's
+# default kindnet does NOT enforce; install Calico via
+# `kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml`
+# OR pass `--config` to `kind create cluster` with `disableDefaultCNI: true`
+# and install Cilium. The README has the snippet.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "shortlink.componentName" (dict "root" . "component" "worker-egress") }}
+  labels:
+    {{- include "shortlink.componentLabels" (dict "root" . "component" "worker") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: worker
+  policyTypes:
+    - Egress
+  egress:
+    # 1. DNS to kube-dns -- without this Pod has no resolver and every
+    #    outbound name lookup fails (including the webhook customers).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # 2. In-cluster services the worker legitimately talks to. Selecting
+    #    by app.kubernetes.io/component keeps the rule release-agnostic.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ .Chart.Name }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: pgbouncer
+      ports:
+        - protocol: TCP
+          port: 6432
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ .Chart.Name }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: observer
+      ports:
+        - protocol: TCP
+          port: 9090
+
+    # 3. Redis + MinIO live in the same namespace as the chart in the
+    #    demo cluster. Targeting them by name only requires a Service of
+    #    that name; the operator provides those out-of-chart.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - podSelector:
+            matchLabels:
+              app: minio
+      ports:
+        - protocol: TCP
+          port: 9000
+
+    # 4. Customer webhook deliveries: public internet only. Allow all CIDRs
+    #    EXCEPT the four RFC1918 ranges + link-local + loopback + the kube
+    #    Service/Pod CIDRs. This is the SSRF backstop -- if the URL guard
+    #    in internal/security ever misses a private address, the kernel
+    #    drops the SYN here.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 127.0.0.0/8
+              # If your cluster uses different Service/Pod CIDRs (kind's
+              # defaults are 10.96.0.0/12 and 10.244.0.0/16), the 10.0.0.0/8
+              # except above already covers them.
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+{{- end }}

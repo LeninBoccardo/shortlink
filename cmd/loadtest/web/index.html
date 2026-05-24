@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ShortLink — Load Test Showcase</title>
+  <link rel="stylesheet" href="app.css" />
+  <script>
+    // Templated by the Go server at startup from --observer / --grafana flags.
+    // The trailing JSON object is what app.js reads on load.
+    window.SHORTLINK_CONFIG = {{ .Config }};
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <h1>ShortLink — Load Test Showcase</h1>
+    <div class="status">
+      <span id="conn-indicator" class="conn conn-init" title="WebSocket status">●</span>
+      <span id="conn-text">Initializing</span>
+      <button id="btn-reset" class="btn" disabled>Reset stats</button>
+    </div>
+  </header>
+
+  <section class="panel" id="panel-keys">
+    <h2>API key metrics <span class="hint">live via observer WebSocket</span></h2>
+    <table class="key-table">
+      <thead>
+        <tr>
+          <th class="col-key">Key</th>
+          <th class="col-tier">Tier</th>
+          <th class="col-rl">Rate limit</th>
+          <th class="col-num">Reqs</th>
+          <th class="col-num">WH</th>
+          <th class="col-num">429</th>
+          <th class="col-num">Err</th>
+          <th class="col-num">p99</th>
+        </tr>
+      </thead>
+      <tbody id="key-tbody">
+        <tr class="empty"><td colspan="8">No keys seen yet.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel" id="panel-monitoring">
+    <h2>Monitoring <span class="hint">embedded Grafana panels</span></h2>
+    <div class="grafana-grid">
+      <div class="grafana-slot" id="grafana-jobs">
+        <strong>jobs/sec, error rate</strong>
+        <p>Grafana iframe — wired in M7.</p>
+      </div>
+      <div class="grafana-slot" id="grafana-qr">
+        <strong>QR gen p99, queue depth</strong>
+        <p>Grafana iframe — wired in M7.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-logs">
+    <h2>
+      Log audit <span class="hint">live via observer WebSocket</span>
+      <span class="actions">
+        <label>Source <select id="filter-source"><option value="">all</option></select></label>
+        <label>Level <select id="filter-level"><option value="">all</option></select></label>
+        <label>Key <select id="filter-key"><option value="">all</option></select></label>
+        <button id="btn-clear" class="btn" disabled>Clear logs</button>
+      </span>
+    </h2>
+    <ul id="log-list" class="log-list">
+      <li class="empty">No events yet.</li>
+    </ul>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>

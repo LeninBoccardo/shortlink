@@ -1,11 +1,10 @@
-// Command loadtest is the multi-key vegeta attack runner (SPEC §4.4): it
-// loads keys.yaml, spins up one vegeta.Attacker per key against the API
+// Command loadtest is the multi-key vegeta attack runner (SPEC §4.4 / §11):
+// it loads keys.yaml, spins up one vegeta.Attacker per key against the API
 // gateway, hosts a built-in HMAC-verifying webhook sink on :8091 so the
-// pipeline closes end-to-end, and emits attack_started / attack_complete
-// events to the observer hub.
-//
-// M5 is a one-shot CLI: it runs for --duration, prints per-key metrics, and
-// exits. The :8090 showcase page lands in M6.
+// pipeline closes end-to-end, emits attack_started / attack_complete events
+// to the observer hub, and from M6 serves the showcase frontend at :8090
+// (embedded into the binary via go:embed). After the attack finishes the
+// runner stays up until SIGINT so the user can study the final dashboard.
 package main
 
 import (
@@ -51,7 +50,7 @@ func parseFlags() runConfig {
 	flag.DurationVar(&cfg.duration, "duration", 60*time.Second, "attack duration")
 	flag.StringVar(&cfg.observerURL, "observer", "http://localhost:9090", "observer hub URL")
 	flag.StringVar(&cfg.grafanaURL, "grafana", "http://localhost:3000", "Grafana base URL (M6 showcase page)")
-	flag.IntVar(&cfg.pagePort, "port", 8090, "showcase page port (reserved for M6)")
+	flag.IntVar(&cfg.pagePort, "port", 8090, "showcase page port")
 	flag.StringVar(&cfg.sinkURL, "sink-url", "http://localhost:8091/sink", "webhook sink URL advertised to the API")
 	flag.IntVar(&cfg.sinkPort, "sink-port", 8091, "webhook sink listen port")
 	flag.Parse()
@@ -96,17 +95,41 @@ func run(cfg runConfig) error {
 		}
 	}()
 
+	page, err := newPageServer(cfg)
+	if err != nil {
+		return err
+	}
+	pageSrv := &http.Server{
+		Addr:              fmt.Sprintf(":%d", cfg.pagePort),
+		Handler:           page.routes(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	pageErr := make(chan error, 1)
+	go func() {
+		log.Info("showcase page listening", "addr", pageSrv.Addr,
+			"observer", cfg.observerURL, "grafana", cfg.grafanaURL)
+		if err := pageSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			pageErr <- err
+		}
+	}()
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	attackCtx, cancelAttack := context.WithTimeout(context.Background(), cfg.duration)
 	defer cancelAttack()
 
-	// Watch for signals or sink errors and cancel the attack early. This MUST
-	// run concurrently with runAttacks (which blocks for --duration); the old
-	// code had a non-blocking select after runAttacks, which meant SIGINT
-	// during the attack was silently ignored.
+	// shutdown closes when the user signals (or a server dies). The watcher
+	// goroutine cancels the attack early on signal/error, then signals via
+	// close(shutdown). After the attack finishes naturally on duration, the
+	// main goroutine waits on shutdown so the page stays up until the user
+	// is done browsing the final state.
+	shutdown := make(chan struct{})
 	go func() {
+		defer close(shutdown)
 		select {
 		case sig := <-stop:
 			log.Info("interrupted, cancelling attack", "signal", sig.String())
@@ -114,7 +137,20 @@ func run(cfg runConfig) error {
 		case err := <-sinkErr:
 			log.Error("sink server failed, cancelling attack", "error", err)
 			cancelAttack()
+		case err := <-pageErr:
+			log.Error("page server failed, cancelling attack", "error", err)
+			cancelAttack()
 		case <-attackCtx.Done():
+			// Attack finished on its own. Wait for the user (or a server
+			// failure) before tearing the dashboard down.
+			select {
+			case sig := <-stop:
+				log.Info("signal received post-attack, shutting down", "signal", sig.String())
+			case err := <-sinkErr:
+				log.Error("sink server failed post-attack", "error", err)
+			case err := <-pageErr:
+				log.Error("page server failed post-attack", "error", err)
+			}
 		}
 	}()
 
@@ -143,10 +179,18 @@ func run(cfg runConfig) error {
 		Meta:    summaryMeta(results, delivered, rejected),
 	})
 
+	log.Info("attack done; showcase page still live — Ctrl-C to exit",
+		"page", fmt.Sprintf("http://localhost:%d/", cfg.pagePort))
+
+	<-shutdown
+
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer shutCancel()
 	if err := sinkSrv.Shutdown(shutCtx); err != nil {
 		log.Warn("sink shutdown", "error", err)
+	}
+	if err := pageSrv.Shutdown(shutCtx); err != nil {
+		log.Warn("page shutdown", "error", err)
 	}
 	return nil
 }

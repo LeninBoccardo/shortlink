@@ -183,10 +183,10 @@ func (b *Broadcaster) readLoop(c *client) {
 		switch cmd.Action {
 		case "clear_logs":
 			b.hub.State().clearLogs()
-			b.sendReset(c, "logs")
+			b.broadcastReset("logs")
 		case "reset_stats":
 			b.hub.State().resetStats()
-			b.sendReset(c, "stats")
+			b.broadcastReset("stats")
 		}
 	}
 }
@@ -277,12 +277,26 @@ func (b *Broadcaster) trySend(c *client, msg []byte) {
 	}
 }
 
-func (b *Broadcaster) sendReset(c *client, scope string) {
+// broadcastReset fans the reset frame out to every connected client so all
+// viewers see the cleared state in lock-step, not just the one that issued
+// the cmd. Snapshots the client set under mu, sends outside the lock the same
+// way broadcastTick does, so trySend / disconnect races stay symmetric.
+func (b *Broadcaster) broadcastReset(scope string) {
 	frame := struct {
 		Type  string `json:"type"`
 		Scope string `json:"scope"`
 	}{Type: "reset", Scope: scope}
-	if payload, err := json.Marshal(frame); err == nil {
+	payload, err := json.Marshal(frame)
+	if err != nil {
+		return
+	}
+	b.mu.Lock()
+	clients := make([]*client, 0, len(b.clients))
+	for c := range b.clients {
+		clients = append(clients, c)
+	}
+	b.mu.Unlock()
+	for _, c := range clients {
 		b.trySend(c, payload)
 	}
 }

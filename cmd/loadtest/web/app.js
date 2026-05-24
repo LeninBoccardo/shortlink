@@ -19,6 +19,9 @@
     btnClear: document.getElementById("btn-clear"),
     keyTbody: document.getElementById("key-tbody"),
     logList: document.getElementById("log-list"),
+    filterSource: document.getElementById("filter-source"),
+    filterLevel: document.getElementById("filter-level"),
+    filterKey: document.getElementById("filter-key"),
   };
 
   // ---------- connection indicator -----------------------------------------
@@ -149,9 +152,22 @@
     appendLogs(frame.logs || []);
   }
   function onReset(frame) {
-    // eslint-disable-next-line no-console
-    console.log("reset:", frame.scope);
+    // Server is telling every client to wipe the matching scope.
+    if (frame.scope === "logs") {
+      resetLogs([]);
+    } else if (frame.scope === "stats") {
+      renderKeyTable([]);
+    }
   }
+
+  // ---------- cmd buttons -------------------------------------------------
+
+  function sendCmd(action) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: "cmd", action: action }));
+  }
+  if (els.btnClear) els.btnClear.addEventListener("click", function () { sendCmd("clear_logs"); });
+  if (els.btnReset) els.btnReset.addEventListener("click", function () { sendCmd("reset_stats"); });
 
   // ---------- key-stats table ---------------------------------------------
   //
@@ -280,15 +296,20 @@
       els.logList.innerHTML = "";
     }
     var now = Date.now();
+    var newSources = false, newLevels = false, newHints = false;
     // Iterate the incoming batch oldest-first so prepending one at a time
     // ends with the newest at the top.
     for (var i = fresh.length - 1; i >= 0; i--) {
       var entry = fresh[i];
       if (!entry || !entry.id || logLiByID[entry.id]) continue; // dedup on reconnect snapshot overlap
       var li = buildLogRow(entry, now);
+      applyFilterToRow(li);
       logLiByID[entry.id] = li;
       logs.unshift(entry);
       els.logList.insertBefore(li, els.logList.firstChild);
+      if (entry.source && !filterOpts.sources[entry.source]) { filterOpts.sources[entry.source] = true; newSources = true; }
+      if (entry.level && !filterOpts.levels[entry.level]) { filterOpts.levels[entry.level] = true; newLevels = true; }
+      if (entry.api_key_hint && !filterOpts.hints[entry.api_key_hint]) { filterOpts.hints[entry.api_key_hint] = true; newHints = true; }
     }
     // Cap the ring.
     while (logs.length > LOG_RING_MAX) {
@@ -297,6 +318,9 @@
       if (oldLi && oldLi.parentNode) oldLi.parentNode.removeChild(oldLi);
       delete logLiByID[evicted.id];
     }
+    if (newSources) rebuildFilterSelect(els.filterSource, filterOpts.sources);
+    if (newLevels)  rebuildFilterSelect(els.filterLevel, filterOpts.levels);
+    if (newHints)   rebuildFilterSelect(els.filterKey, filterOpts.hints, function (h) { return "…" + h; });
     tickLogTTLs();
   }
 
@@ -368,6 +392,54 @@
   }
 
   setInterval(tickLogTTLs, 1000);
+
+  // ---------- filter controls ---------------------------------------------
+  //
+  // SPEC §11: "Log filter dropdown: by source (api / worker / loadtest), by
+  // level (warn/error only), by API key hint." We populate the option list
+  // incrementally as new sources / levels / hints arrive in events, and
+  // apply the current filter to every <li> via a `filtered` class — no
+  // re-render on filter change, just classList toggles.
+
+  var filterOpts = {
+    sources: Object.create(null),
+    levels: Object.create(null),
+    hints: Object.create(null),
+  };
+
+  function rebuildFilterSelect(sel, set, format) {
+    if (!sel) return;
+    var current = sel.value;
+    var keys = Object.keys(set).sort();
+    sel.innerHTML = '<option value="">all</option>' +
+      keys.map(function (k) {
+        var label = format ? format(k) : k;
+        return '<option value="' + k + '">' + label + '</option>';
+      }).join("");
+    if (current && set[current]) sel.value = current;
+  }
+
+  function applyFilterToRow(li) {
+    var src = els.filterSource ? els.filterSource.value : "";
+    var lvl = els.filterLevel ? els.filterLevel.value : "";
+    var hint = els.filterKey ? els.filterKey.value : "";
+    var hide = (src && li.dataset.source !== src) ||
+               (lvl && li.dataset.level !== lvl) ||
+               (hint && li.dataset.hint !== hint);
+    li.classList.toggle("filtered", hide);
+  }
+
+  function applyFilterToAll() {
+    if (!els.logList) return;
+    var rows = els.logList.children;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].dataset && rows[i].dataset.id) applyFilterToRow(rows[i]);
+    }
+  }
+
+  ["filterSource", "filterLevel", "filterKey"].forEach(function (k) {
+    if (els[k]) els[k].addEventListener("change", applyFilterToAll);
+  });
 
   // ---------- kick off ----------------------------------------------------
 

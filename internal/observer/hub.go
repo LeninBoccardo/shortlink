@@ -6,13 +6,12 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/leninboccardo/shortlink/internal/events"
 	"github.com/leninboccardo/shortlink/internal/httpx"
+	"github.com/leninboccardo/shortlink/internal/metrics"
 )
 
 // IngestBuffer is the size of the channel between the ingest handler and the
@@ -30,9 +29,6 @@ type Hub struct {
 	ingestToken string
 	stop        chan struct{}
 	done        chan struct{}
-	dropped     atomic.Int64
-	received    atomic.Int64
-	rejected    atomic.Int64
 }
 
 // NewHub returns a Hub with a fresh State. ingestToken is the required value
@@ -69,14 +65,14 @@ func (h *Hub) Enqueue(ev events.Event) {
 	}
 	select {
 	case <-h.stop:
-		h.dropped.Add(1)
+		metrics.EventsDroppedTotal.WithLabelValues(metrics.SourceObserver).Inc()
 		return
 	default:
 	}
 	select {
 	case h.ch <- ev:
 	default:
-		h.dropped.Add(1)
+		metrics.EventsDroppedTotal.WithLabelValues(metrics.SourceObserver).Inc()
 	}
 }
 
@@ -128,7 +124,7 @@ func (h *Hub) Routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ingest", h.handleIngest)
 	mux.HandleFunc("/healthz", h.handleHealth)
-	mux.HandleFunc("/metrics", h.handleMetrics)
+	mux.Handle("/metrics", metrics.Handler())
 	return mux
 }
 
@@ -138,7 +134,7 @@ func (h *Hub) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.checkIngestAuth(r) {
-		h.rejected.Add(1)
+		metrics.EventsRejectedTotal.Inc()
 		httpx.WriteError(w, http.StatusUnauthorized, "missing or invalid ingest token")
 		return
 	}
@@ -154,14 +150,26 @@ func (h *Hub) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if ev.Timestamp.IsZero() {
 		ev.Timestamp = time.Now().UTC()
 	}
-	h.received.Add(1)
+	metrics.EventsReceivedTotal.Inc()
 	select {
 	case h.ch <- ev:
 	default:
-		h.dropped.Add(1)
+		metrics.EventsDroppedTotal.WithLabelValues(sourceLabel(ev.Source)).Inc()
 		h.log.Warn("observer ingest buffer full, dropping event", "kind", ev.Kind)
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// sourceLabel returns a stable, low-cardinality source label for metrics.
+// Events with unknown/missing Source land in "other" rather than spawning
+// an unbounded label space if a misconfigured emitter sends garbage.
+func sourceLabel(s string) string {
+	switch s {
+	case metrics.SourceAPI, metrics.SourceWorker, metrics.SourceObserver, metrics.SourceLoadtest:
+		return s
+	default:
+		return "other"
+	}
 }
 
 func (h *Hub) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -180,21 +188,4 @@ func (h *Hub) checkIngestAuth(r *http.Request) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(got), []byte(h.ingestToken)) == 1
-}
-
-// handleMetrics is the Prometheus stub for M4. Full collectors land in M7 —
-// for now we only expose the one counter SPEC §4.3 explicitly names.
-func (h *Hub) handleMetrics(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-	body := "" +
-		"# HELP observer_events_dropped_total Events dropped by the observer ingest buffer.\n" +
-		"# TYPE observer_events_dropped_total counter\n" +
-		"observer_events_dropped_total " + strconv.FormatInt(h.dropped.Load(), 10) + "\n" +
-		"# HELP observer_events_received_total Events accepted at /ingest.\n" +
-		"# TYPE observer_events_received_total counter\n" +
-		"observer_events_received_total " + strconv.FormatInt(h.received.Load(), 10) + "\n" +
-		"# HELP observer_events_rejected_total Ingest requests rejected for bad auth.\n" +
-		"# TYPE observer_events_rejected_total counter\n" +
-		"observer_events_rejected_total " + strconv.FormatInt(h.rejected.Load(), 10) + "\n"
-	_, _ = w.Write([]byte(body))
 }

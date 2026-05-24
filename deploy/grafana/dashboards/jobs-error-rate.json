@@ -126,7 +126,8 @@
               }
             ]
           },
-          "unit": "percentunit"
+          "unit": "percentunit",
+          "noValue": "0"
         },
         "overrides": []
       },
@@ -157,7 +158,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(shortlink_jobs_total{status=~\"error|dlq\"}[5m])) / clamp_min(sum(rate(shortlink_jobs_total[5m])), 0.001)",
+          "expr": "(sum(rate(shortlink_jobs_total{status=~\"error|dlq\"}[5m])) or on() vector(0)) / clamp_min(sum(rate(shortlink_jobs_total[5m])), 0.001)",
           "legendFormat": "error rate",
           "range": true,
           "refId": "A"

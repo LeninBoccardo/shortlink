@@ -326,7 +326,11 @@ func (s *State) SetQueueDepth(n int64) {
 // command). The broadcaster sends every connected client a reset frame.
 func (s *State) clearLogs() {
 	s.mu.Lock()
-	for i := 0; i < s.logCount; i++ {
+	// Zero the whole backing array, not [0, logCount): the live ring lives at
+	// [logHead-logCount, logHead-1) mod LogRingSize, so the old slice indices
+	// almost never lined up with the actual live range. Wiping the full
+	// fixed-size array is cheap and lets each entry's Meta map be GC'd.
+	for i := range s.logs {
 		s.logs[i] = LogEntry{}
 	}
 	s.logHead = 0

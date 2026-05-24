@@ -121,9 +121,6 @@ func NewEmitter(cfg Config) *Emitter {
 // caller is never blocked. After Close, further Emits are dropped (the
 // background goroutine has exited and nothing would send them).
 func (e *Emitter) Emit(ev Event) {
-	if e == nil {
-		return
-	}
 	if ev.ID == "" {
 		ev.ID = NewEventID()
 	}
@@ -149,9 +146,6 @@ func (e *Emitter) Emit(ev Event) {
 // Close stops the background worker. It drains the channel for up to ~grace
 // before returning; events still in flight after that are abandoned.
 func (e *Emitter) Close(grace time.Duration) {
-	if e == nil {
-		return
-	}
 	e.once.Do(func() {
 		close(e.stop)
 	})

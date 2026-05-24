@@ -107,12 +107,19 @@ func (s *Sweeper) sweepQRObjects(ctx context.Context, now time.Time) {
 		if !r.QrObject.Valid {
 			continue
 		}
-		if err := s.store.Delete(ctx, r.QrObject.String); err != nil {
-			s.log.Warn("delete qr object", "error", err, "job_id", r.JobID)
-			continue // retry next sweep
-		}
+		// Null the row's qr_object pointer BEFORE deleting the object so a
+		// concurrent webhook handler that loaded the row a moment earlier
+		// can't Stat a key the sweeper is about to delete (M9a-B5). The
+		// handler's QrObject.Valid guard means any later load drops the
+		// delivery cleanly. Failed store.Delete leaves a MinIO orphan; the
+		// SPEC §6 1-day lifecycle rule is the documented backstop.
+		key := r.QrObject.String
 		if err := s.queries.ClearQRObject(ctx, r.JobID); err != nil {
 			s.log.Warn("clear qr_object column", "error", err, "job_id", r.JobID)
+			continue
+		}
+		if err := s.store.Delete(ctx, key); err != nil {
+			s.log.Warn("delete qr object (orphan)", "error", err, "job_id", r.JobID, "key", key)
 			continue
 		}
 		cleared++

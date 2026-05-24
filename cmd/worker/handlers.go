@@ -184,10 +184,10 @@ func (w *worker) handleWebhookJob(ctx context.Context, payload []byte) error {
 			Kind:       events.KindWebhookFailed,
 			APIKeyHash: apiKey.KeyHash,
 			APIKeyHint: apiKey.KeyHint,
-			Message:    "webhook delivery failed: " + err.Error(),
+			Message:    "webhook delivery failed",
 			Meta: map[string]any{
 				"job_id":        p.JobID,
-				"target":        row.WebhookUrl,
+				"error_class":   errClass(err),
 				"final_attempt": final,
 			},
 		})
@@ -234,8 +234,11 @@ func (w *worker) shortenFailed(ctx context.Context, p queue.ShortenJobPayload, l
 			Kind:       events.KindJobError,
 			APIKeyHash: p.APIKeyHash,
 			APIKeyHint: p.APIKeyHint,
-			Message:    "shorten attempt failed, will retry: " + cause.Error(),
-			Meta:       map[string]any{"job_id": jobID},
+			Message:    "shorten attempt failed, will retry",
+			Meta: map[string]any{
+				"job_id":      jobID,
+				"error_class": errClass(cause),
+			},
 		})
 		return cause
 	}
@@ -253,8 +256,11 @@ func (w *worker) shortenFailed(ctx context.Context, p queue.ShortenJobPayload, l
 		Kind:       events.KindJobDLQ,
 		APIKeyHash: p.APIKeyHash,
 		APIKeyHint: p.APIKeyHint,
-		Message:    "shorten job permanently failed (archived): " + cause.Error(),
-		Meta:       map[string]any{"job_id": jobID},
+		Message:    "shorten job permanently failed (archived)",
+		Meta: map[string]any{
+			"job_id":      jobID,
+			"error_class": errClass(cause),
+		},
 	})
 	return cause
 }

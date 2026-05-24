@@ -243,25 +243,33 @@ func (s *State) Prune(now time.Time) {
 	defer s.mu.Unlock()
 	if s.logCount > 0 {
 		// Per-kind TTLs mean entries don't expire in chronological order, so
-		// we can't early-stop on the first non-expired entry. Walk the ring
-		// oldest→newest, collect survivors, then re-pack into the start.
-		// One kept slice allocated per tick (every 100ms) — versus the old
-		// implementation's per-event ring copy.
-		kept := make([]LogEntry, 0, s.logCount)
+		// we can't early-stop on the first non-expired entry. Compact in-place
+		// with two indices anchored at the ring's tail: the read index walks
+		// every live entry oldest→newest, the write index advances only when
+		// the read entry survives. Since write <= read at every step (both
+		// relative to tail), we never overwrite an entry that hasn't been
+		// read yet -- including across the ring's wraparound. No per-tick
+		// allocation; the previous kept-slice churned ~10 allocs/s at idle.
 		tail := (s.logHead - s.logCount + LogRingSize) % LogRingSize
+		j := 0
 		for i := 0; i < s.logCount; i++ {
-			idx := (tail + i) % LogRingSize
-			if !now.After(s.logs[idx].ExpiresAt) {
-				kept = append(kept, s.logs[idx])
+			readIdx := (tail + i) % LogRingSize
+			if now.After(s.logs[readIdx].ExpiresAt) {
+				continue
 			}
+			writeIdx := (tail + j) % LogRingSize
+			if writeIdx != readIdx {
+				s.logs[writeIdx] = s.logs[readIdx]
+			}
+			j++
 		}
-		n := copy(s.logs[:], kept)
-		// Zero remaining slots so dropped entries' Meta maps can be GC'd.
-		for i := n; i < s.logCount; i++ {
-			s.logs[i] = LogEntry{}
+		// Zero the now-vacant slots so dropped entries' Meta maps can be GC'd.
+		for i := j; i < s.logCount; i++ {
+			idx := (tail + i) % LogRingSize
+			s.logs[idx] = LogEntry{}
 		}
-		s.logHead = n % LogRingSize
-		s.logCount = n
+		s.logHead = (tail + j) % LogRingSize
+		s.logCount = j
 	}
 	cutoff := now.Add(-LatencyWindow)
 	idleCutoff := now.Add(-keyStatsIdleEvict)

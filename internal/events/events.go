@@ -118,7 +118,8 @@ func NewEmitter(cfg Config) *Emitter {
 
 // Emit enqueues ev for asynchronous delivery. Missing ID / Timestamp / Source
 // are filled in. If the buffer is full the event is dropped silently — the
-// caller is never blocked.
+// caller is never blocked. After Close, further Emits are dropped (the
+// background goroutine has exited and nothing would send them).
 func (e *Emitter) Emit(ev Event) {
 	if e == nil {
 		return
@@ -131,6 +132,11 @@ func (e *Emitter) Emit(ev Event) {
 	}
 	if ev.Source == "" {
 		ev.Source = e.source
+	}
+	select {
+	case <-e.stop:
+		return
+	default:
 	}
 	select {
 	case e.ch <- ev:

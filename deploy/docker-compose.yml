@@ -1,6 +1,6 @@
 # ShortLink — local infrastructure.
 # Built up across milestones (SPEC §13). Milestone 2: Postgres + MinIO + Redis.
-# Prometheus/Grafana arrive in M7; PgBouncer in M8.
+# Milestone 7 adds Prometheus + Grafana. PgBouncer arrives in M8.
 #
 # Usage:  docker compose -f deploy/docker-compose.yml up -d   (or: make dev)
 name: shortlink
@@ -47,6 +47,46 @@ services:
       timeout: 3s
       retries: 10
 
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=2h
+      - --web.enable-lifecycle
+    ports:
+      # Host port 9091 (not 9090) avoids colliding with the observer on the
+      # host (api/worker/observer run on the host during local dev). Inside
+      # compose Prometheus still listens on 9090; Grafana reaches it as
+      # http://prometheus:9090.
+      - "9091:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      # Lets Prometheus reach api/worker/observer that run on the dev host.
+      # Native on Docker Desktop; needed for Linux.
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"
+      GF_USERS_DEFAULT_THEME: dark
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
 volumes:
   postgres-data:
   minio-data:
+  prometheus-data:
+  grafana-data:

@@ -1,0 +1,13 @@
+# Auto-provisioned Prometheus datasource. The uid is set explicitly so
+# dashboards committed to deploy/grafana/dashboards/ can reference it by uid
+# instead of name (renames stay safe).
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

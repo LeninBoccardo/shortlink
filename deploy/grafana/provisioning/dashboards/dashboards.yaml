@@ -1,0 +1,17 @@
+# Auto-provisioned dashboards loaded from deploy/grafana/dashboards/. Files
+# committed there appear in the "ShortLink" folder on first boot; uids match
+# the data-panel attrs in cmd/loadtest/web/index.html so the embed iframes
+# can resolve them without a manual setup step.
+apiVersion: 1
+
+providers:
+  - name: shortlink
+    folder: ShortLink
+    type: file
+    disableDeletion: true
+    editable: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

@@ -1,0 +1,26 @@
+# Prometheus scrape config for the ShortLink local stack (SPEC §13).
+# api/worker/observer run on the host during local dev (make run-*), so
+# Prometheus reaches them via host.docker.internal (mapped to host-gateway
+# in docker-compose.yml). In Kubernetes (M8) these become pod targets.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: api
+    static_configs:
+      - targets: ["host.docker.internal:8080"]
+        labels:
+          service: api
+
+  - job_name: worker
+    static_configs:
+      - targets: ["host.docker.internal:8081"]
+        labels:
+          service: worker
+
+  - job_name: observer
+    static_configs:
+      - targets: ["host.docker.internal:9090"]
+        labels:
+          service: observer

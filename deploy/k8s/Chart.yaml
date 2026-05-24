@@ -1,0 +1,13 @@
+apiVersion: v2
+name: shortlink
+description: ShortLink — async URL shortener + QR generator (SPEC §12)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - url-shortener
+  - asynq
+  - portfolio
+home: https://github.com/leninboccardo/shortlink
+sources:
+  - https://github.com/leninboccardo/shortlink

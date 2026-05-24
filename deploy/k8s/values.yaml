@@ -1,0 +1,107 @@
+# ShortLink Helm values (SPEC §12 / §14). Override locally with --set or -f.
+
+image:
+  # Repository prefix shared by every binary; runtime image = repo + "-" + name.
+  # api -> shortlink-api, worker -> shortlink-worker, etc.
+  repository: shortlink
+  tag: dev
+  pullPolicy: IfNotPresent
+  # `kind load docker-image shortlink-api:dev` puts the image directly into the
+  # kind cluster, no registry needed. If you push to a registry, prefix the
+  # repository here ("ghcr.io/user/shortlink").
+
+# Per-service replica counts. Worker is also driven by the KEDA ScaledObject
+# below -- this value is the minReplicas floor.
+api:
+  replicas: 2
+  resources:
+    requests:  { cpu: 100m, memory: 128Mi }
+    limits:    { cpu: 500m, memory: 256Mi }
+
+worker:
+  replicas: 2
+  resources:
+    requests:  { cpu: 100m, memory: 128Mi }
+    limits:    { cpu: 500m, memory: 256Mi }
+
+observer:
+  replicas: 1
+  resources:
+    requests:  { cpu: 50m,  memory: 64Mi }
+    limits:    { cpu: 200m, memory: 128Mi }
+
+pgbouncer:
+  image:
+    repository: edoburu/pgbouncer
+    tag: v1.25.1-p0
+  replicas: 1
+  resources:
+    requests:  { cpu: 50m,  memory: 32Mi }
+    limits:    { cpu: 200m, memory: 64Mi }
+
+# Where to find the external dependencies. In k8s these would normally be the
+# Service names of Postgres / Redis / MinIO deployed alongside this chart, or
+# DNS names of cloud-managed equivalents. For the demo cluster they default to
+# in-cluster Services that an operator brings up separately.
+postgres:
+  host: postgres
+  port: 5432
+  database: shortlink
+  user: shortlink
+
+redis:
+  url: redis://redis:6379
+
+minio:
+  endpoint: minio:9000
+  bucket: shortlink-qr
+  useSSL: false
+
+# Sensitive values rendered into the Secret. In real deployments these come
+# from External Secrets Operator / SealedSecrets / Vault, never plain values.
+secrets:
+  postgresPassword: shortlink
+  minioAccessKey: minioadmin
+  minioSecretKey: minioadmin
+  observerIngestToken: ""   # empty = /ingest open; matches local-dev default
+
+# Non-secret config, rendered into the ConfigMap.
+config:
+  logLevel: info
+  shortURLBase: http://shortlink.example.com
+  pgPoolSize: 8
+  signedURLTTL: 60s
+  qrSize: 256
+  slugLength: 7
+  slugMaxRetries: 5
+  workerConcurrency: 3
+  claimLease: 2m
+  webhookMaxAttempts: 5
+  drainTimeout: 30s
+  sweepStaleAge: 30m
+  qrObjectTTL: 15m
+  rateLimitFree: 10
+  rateLimitPro: 60
+  lastUsedThrottle: 5m
+  queueDepthThreshold: 100
+  ssrfAllowlist: ""   # comma-separated; empty = production-strict
+  urlBlocklist: ""
+
+# KEDA worker autoscaler. KEDA itself is installed separately (not by this
+# chart); see deploy/k8s/README.md.
+keda:
+  enabled: true
+  worker:
+    minReplicas: 2
+    maxReplicas: 12
+    pollingInterval: 10
+    cooldownPeriod: 60
+    queueLength: 30           # scale up when pending > N per replica
+    queues:
+      - shorten
+      - webhook
+
+# SSRF egress NetworkPolicy for the worker pods. Requires a CNI that enforces
+# NetworkPolicy (Calico, Cilium). The default Calico-on-kind setup works.
+networkPolicy:
+  enabled: true

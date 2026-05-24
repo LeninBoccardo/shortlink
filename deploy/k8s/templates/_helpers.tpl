@@ -1,0 +1,51 @@
+{{/*
+  Common naming and labels. Keeping these centralised so renaming the chart
+  doesn't mean updating every template by hand.
+*/}}
+
+{{- define "shortlink.fullname" -}}
+{{- printf "%s-%s" .Release.Name .Chart.Name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+  Per-component name -- pass the component string in via `dict`:
+    {{ include "shortlink.componentName" (dict "root" . "component" "api") }}
+*/}}
+{{- define "shortlink.componentName" -}}
+{{- printf "%s-%s" (include "shortlink.fullname" .root) .component | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+  Labels every object carries. app.kubernetes.io/* are the recommended set
+  Helm tooling and the dashboard understand.
+*/}}
+{{- define "shortlink.labels" -}}
+app.kubernetes.io/name: {{ .Chart.Name }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
+{{- end -}}
+
+{{/*
+  Per-component labels. Adds app.kubernetes.io/component so Pod selectors and
+  NetworkPolicy can target exactly one workload.
+*/}}
+{{- define "shortlink.componentLabels" -}}
+{{ include "shortlink.labels" .root }}
+app.kubernetes.io/component: {{ .component }}
+{{- end -}}
+
+{{/*
+  PostgreSQL DSN pointed at PgBouncer. apps always go through the pooler.
+*/}}
+{{- define "shortlink.databaseURL" -}}
+postgres://{{ .Values.postgres.user }}:{{ .Values.secrets.postgresPassword }}@{{ include "shortlink.componentName" (dict "root" . "component" "pgbouncer") }}:6432/{{ .Values.postgres.database }}?sslmode=disable
+{{- end -}}
+
+{{/*
+  Image reference helper: image.repository + "-" + name + ":" + tag.
+*/}}
+{{- define "shortlink.image" -}}
+{{ .Values.image.repository }}-{{ .name }}:{{ .Values.image.tag }}
+{{- end -}}

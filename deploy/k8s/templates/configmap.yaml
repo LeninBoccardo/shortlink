@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "shortlink.componentName" (dict "root" . "component" "config") }}
+  labels:
+    {{- include "shortlink.labels" . | nindent 4 }}
+data:
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  SHORT_URL_BASE: {{ .Values.config.shortURLBase | quote }}
+  PG_POOL_SIZE: {{ .Values.config.pgPoolSize | quote }}
+  MINIO_ENDPOINT: {{ .Values.minio.endpoint | quote }}
+  MINIO_BUCKET: {{ .Values.minio.bucket | quote }}
+  MINIO_USE_SSL: {{ .Values.minio.useSSL | quote }}
+  SIGNED_URL_TTL: {{ .Values.config.signedURLTTL | quote }}
+  QR_SIZE: {{ .Values.config.qrSize | quote }}
+  SLUG_LENGTH: {{ .Values.config.slugLength | quote }}
+  SLUG_MAX_RETRIES: {{ .Values.config.slugMaxRetries | quote }}
+  WORKER_CONCURRENCY: {{ .Values.config.workerConcurrency | quote }}
+  CLAIM_LEASE: {{ .Values.config.claimLease | quote }}
+  WEBHOOK_MAX_ATTEMPTS: {{ .Values.config.webhookMaxAttempts | quote }}
+  DRAIN_TIMEOUT: {{ .Values.config.drainTimeout | quote }}
+  SWEEP_STALE_AGE: {{ .Values.config.sweepStaleAge | quote }}
+  QR_OBJECT_TTL: {{ .Values.config.qrObjectTTL | quote }}
+  RATE_LIMIT_FREE: {{ .Values.config.rateLimitFree | quote }}
+  RATE_LIMIT_PRO: {{ .Values.config.rateLimitPro | quote }}
+  LAST_USED_THROTTLE: {{ .Values.config.lastUsedThrottle | quote }}
+  OBSERVER_URL: {{ printf "http://%s:9090" (include "shortlink.componentName" (dict "root" . "component" "observer")) | quote }}
+  QUEUE_DEPTH_THRESHOLD: {{ .Values.config.queueDepthThreshold | quote }}
+  SSRF_ALLOWLIST: {{ .Values.config.ssrfAllowlist | quote }}
+  URL_BLOCKLIST: {{ .Values.config.urlBlocklist | quote }}

@@ -20,6 +20,7 @@ import (
 	"github.com/leninboccardo/shortlink/internal/db"
 	"github.com/leninboccardo/shortlink/internal/events"
 	"github.com/leninboccardo/shortlink/internal/httpx"
+	"github.com/leninboccardo/shortlink/internal/metrics"
 	"github.com/leninboccardo/shortlink/internal/middleware"
 	"github.com/leninboccardo/shortlink/internal/queue"
 	"github.com/leninboccardo/shortlink/internal/shortener"
@@ -32,6 +33,7 @@ func (a *app) routes() http.Handler {
 	r.Use(chimw.Recoverer)
 
 	r.Get("/healthz", a.handleHealth)
+	r.Method(http.MethodGet, "/metrics", metrics.Handler())
 
 	limitFor := func(tier string) int {
 		switch tier {

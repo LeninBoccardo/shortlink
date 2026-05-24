@@ -1,14 +1,21 @@
 # Code Audit — deferred findings
 
-Audit of the Milestone 1 + Milestone 2 code, performed 2026-05-22 before
-starting M3. Each finding has a **fix-now score (0–10)** — how worth fixing it
-was judged to be *before M3* — and a rough confidence.
+This file is the running log of audit findings that were intentionally left
+unresolved. Each finding has a **fix-now score (0–10)** at the time it was
+recorded, plus a rough confidence.
 
-## Resolved (commit `fix: address pre-M3 audit findings`)
+## Audit history
 
-`P2` SSRF DNS-lookup timeout · `P3` HTTP server timeouts · `P5` bounded
-hit-recorder · `B2` MinIO bucket-creation race · `B5` `expires_in` overflow ·
-`B6` startup connection timeout.
+| Date       | Scope          | Resolved in                                    | Deferred (this file)               |
+|------------|----------------|------------------------------------------------|------------------------------------|
+| 2026-05-22 | M1+M2 (pre-M3) | `2c5f266` — P2, P3, P5, B2, B5, B6             | P1, P4, P6, P7, B1, B3, B4, S1, D1, D2, D3 |
+| 2026-05-23 | M3+M4+M5       | commits `6941fc3..1307dc7` — P8, P9, P10, B6, B8, B10, B13, B14, D2, D4, D5, D8, S2, S3, S5 | B11 (re-reviewed and rejected — analysis was wrong) |
+
+> M3+M4+M5 audit findings B7, B9, B12, P12, P13, P15, P17, S4, S6, S7, S8,
+> S9, S10, D6, D7, D9 were investigated and rejected as not real issues —
+> see the curated audit report in conversation history for the reasoning.
+
+---
 
 ## Deferred — performance
 
@@ -65,6 +72,14 @@ worker downtime could run after the sweep → silent non-delivery.
 *Suggested fix:* deliver a degraded payload (no `qr_code`) or emit an explicit
 failure event instead of silently skipping.
 
+### B11 — Heartbeat refresh/Del race (re-reviewed 2026-05-23, REJECTED)
+Original concern: `refresh()` in the ticker case could overlap with the
+final `Del` in the ctx.Done case. **Re-review found the loop is structurally
+safe**: `select` in `runHeartbeat` fires exactly one case per iteration,
+`refresh()` is synchronous (no goroutine), so by the time the ctx.Done
+branch executes, the previous refresh has returned. Confidence dropped
+from 50% to ~20%; finding closed without code change.
+
 ## Deferred — security
 
 ### S1 — `cmd/keygen` re-runs accumulate valid, untracked keys (score 3, confidence 90%)
@@ -83,10 +98,9 @@ or refuse to run when keys already exist unless `--force` is given.
 (two implementations behind the `Queue` interface). *Decision needed:* keep it
 as a deliberate showcase of the abstraction, or delete it.
 
-### D2 — `ShortenJobPayload.APIKeyID` populated but never read (score 1, confidence 100%)
-The gateway fills it; the worker re-derives the key from the row. It is a
-SPEC §7-defined field. *Suggested fix:* drop the field, or leave it documented.
-
 ### D3 — generated `db.Querier` interface unused (score 1, confidence 100%)
 Emitted by `emit_interface: true` in `sqlc.yaml`. Harmless; useful later for
 mocking in tests. Leave as-is.
+
+> D2 (`ShortenJobPayload.APIKeyID`) was resolved in the M5 audit pass —
+> commit `3b8ccbf`.

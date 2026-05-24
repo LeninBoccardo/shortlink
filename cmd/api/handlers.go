@@ -270,4 +270,3 @@ func newJobID() (string, error) {
 	}
 	return "job_" + id.String(), nil
 }
-

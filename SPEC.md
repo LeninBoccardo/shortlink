@@ -1354,6 +1354,7 @@ All binaries are configured through environment variables, parsed by `internal/c
 | `WORKER_PORT` | `8081` | worker | Health + metrics port |
 | `OBSERVER_PORT` | `9090` | observer | HTTP + WebSocket port. Local default is `9090` (not `9000`) to leave the conventional MinIO host port free |
 | `OBSERVER_URL` | `http://localhost:9090` | api, worker, loadtest | Target for event emission (`POST /ingest`) |
+| `OBSERVER_INGEST_TOKEN` | (empty) | api, worker, loadtest, observer | Shared bearer token gating `POST /ingest`. Empty (the local-dev default) leaves `/ingest` open — the observer logs a WARN at startup. When set, the observer requires `Authorization: Bearer <token>` and every emitter must be started with the same value so it can attach the header. `/stream` is unaffected (read-only; gated by Origin allowlist) |
 | `QUEUE_DEPTH_THRESHOLD` | `100` | observer | Pending-job count above which `queue_depth_high` is emitted |
 | `MINIO_ENDPOINT` | `localhost:9000` | worker | Object storage endpoint |
 | `MINIO_ACCESS_KEY` | `minioadmin` (local) | worker | Object storage credential; a real secret in production |

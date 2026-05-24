@@ -63,7 +63,10 @@ secrets:
   postgresPassword: shortlink
   minioAccessKey: minioadmin
   minioSecretKey: minioadmin
-  observerIngestToken: ""   # empty = /ingest open; matches local-dev default
+  # REQUIRED. Empty/missing would leave POST /ingest open in-cluster, so
+  # secret.yaml renders it through `required` and helm install will fail
+  # until you provide a value (e.g. --set secrets.observerIngestToken=...)
+  observerIngestToken: ""
 
 # Non-secret config, rendered into the ConfigMap.
 config:

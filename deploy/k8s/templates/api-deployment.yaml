@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "shortlink.componentName" (dict "root" . "component" "api") }}
+  labels:
+    {{- include "shortlink.componentLabels" (dict "root" . "component" "api") | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        {{- include "shortlink.componentLabels" (dict "root" . "component" "api") | nindent 8 }}
+      annotations:
+        # Trigger a rolling restart whenever the env config changes.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      # 30s grace gives the chi router time to finish in-flight requests
+      # before the kubelet sends SIGKILL.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: api
+          image: {{ include "shortlink.image" (dict "Values" .Values "name" "api") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "shortlink.componentName" (dict "root" . "component" "config") }}
+            - secretRef:
+                name: {{ include "shortlink.componentName" (dict "root" . "component" "secrets") }}
+          env:
+            - name: API_PORT
+              value: "8080"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "shortlink.componentName" (dict "root" . "component" "api") }}
+  labels:
+    {{- include "shortlink.componentLabels" (dict "root" . "component" "api") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

@@ -1113,7 +1113,7 @@ One kind is **stat-only**: `request_completed` updates the per-key counters and 
 ### Data sources
 
 - **WebSocket to the observer** — drives the live per-key table and the log audit panel, using the `snapshot` / `stats` / `log_append` / `reset` protocol from [§4.3](#43-observer-hub).
-- **Embedded Grafana panels** (`iframe`) — the metrics monitoring section. Grafana runs independently and is always available; the page simply embeds its panels. (Grafana must be configured with `allow_embedding = true` and anonymous auth for the iframes to render.)
+- **Embedded Grafana panels** (`iframe`) — the metrics monitoring section. Grafana runs independently and is always available; the page simply embeds its panels. (Grafana must be configured with `allow_embedding = true` and anonymous auth for the iframes to render.) Each iframe slot carries a `data-panel` attribute (`jobs-error-rate`, `qr-queue-depth`) that matches the **uid** of a dashboard provisioned in `deploy/grafana/dashboards/`, so a fresh stack renders immediately with no manual Grafana setup. The iframe URL appends `?kiosk=tv&theme=dark&refresh=5s` for chrome-free embedding.
 
 The observer WebSocket URL and the Grafana base URL are **not hard-coded**. The load test runner templates them into the served `index.html` at request time from its `--observer` and `--grafana` flags, so the page works regardless of host or port.
 
@@ -1299,7 +1299,7 @@ KEDA, PgBouncer, the migration Job, the egress `NetworkPolicy`, and the autoscal
 | `pgbouncer` | `edoburu/pgbouncer` | `6432` | Transaction-pooling in front of Postgres |
 | `redis` | `redis:7-alpine` | `6379` | No persistence needed locally |
 | `minio` | `minio/minio` | `9000` API / `9001` console | S3-compatible object storage |
-| `prometheus` | `prom/prometheus` | `9090` | Scrapes `/metrics` from all services |
+| `prometheus` | `prom/prometheus` | `9091` → `9090` | Scrapes `/metrics` from all services |
 | `grafana` | `grafana/grafana` | `3000` | Provisioned dashboards + datasource |
 
 Notes:
@@ -1310,6 +1310,8 @@ Notes:
 - Postgres is published on host port **`55432`** (not `5432`) so the stack coexists with a native Postgres install on the developer's machine; inside the compose network it still listens on `5432`. The container uses an explicit `POSTGRES_PASSWORD` — `POSTGRES_HOST_AUTH_METHOD=trust` is unreliable because initdb's default scram rules for `127.0.0.1`/`::1` shadow it.
 - The **load test runner is not a compose service** — it runs on the host on demand via `make loadtest` (a one-shot, lasting the attack duration). Its webhook sink listens on the host at `:8091`; the compose `worker` reaches it through `host.docker.internal`, so `SSRF_ALLOWLIST` for `api` and `worker` is set to `host.docker.internal` (resolves natively on Docker Desktop; on Linux add `extra_hosts: ["host.docker.internal:host-gateway"]`).
 - The compose file is **built up across milestones** — Postgres + MinIO from M1, Redis from M2, Prometheus + Grafana from M7, PgBouncer at M8 ([§17](#17-implementation-milestones)).
+- **Prometheus host port is `9091`** (not the canonical `9090`) because the observer already owns host `9090` during local dev. Grafana still reaches Prometheus on the internal compose name `http://prometheus:9090`.
+- **Scrape model differs by environment.** Locally `api`/`worker`/`observer` run on the host (`make run-*`), so the Prometheus container reaches them via `host.docker.internal:8080/8081/9090` (compose declares `host.docker.internal:host-gateway` as an `extra_host` so Linux works too). In Kubernetes (M8) they become pod targets discovered by labels — the dashboards and metric names do not change.
 
 ### Makefile targets
 

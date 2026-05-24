@@ -1,13 +1,19 @@
 # ShortLink — developer tasks (SPEC §13). Targets grow as milestones land.
 COMPOSE := docker compose -f deploy/docker-compose.yml
 
-.PHONY: dev dev-down migrate keys run-api run-worker run-observer loadtest build test sqlc tidy
+.PHONY: dev dev-down stack-up stack-logs migrate keys run-api run-worker run-observer loadtest build test sqlc tidy
 
-dev: ## start local infrastructure (Postgres + MinIO + Redis)
+dev: ## start local infrastructure (Postgres + MinIO + Redis + Prometheus + Grafana)
 	$(COMPOSE) up -d
 
 dev-down: ## stop local infrastructure
 	$(COMPOSE) down
+
+stack-up: ## start (or restart) just the M7 observability services
+	$(COMPOSE) up -d prometheus grafana
+
+stack-logs: ## tail Prometheus + Grafana logs
+	$(COMPOSE) logs -f prometheus grafana
 
 migrate: ## apply database migrations
 	go run ./cmd/migrate up

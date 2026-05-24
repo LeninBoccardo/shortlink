@@ -54,7 +54,9 @@ func NewHub(ingestToken string, log *slog.Logger) *Hub {
 func (h *Hub) State() *State { return h.state }
 
 // Enqueue submits an event for aggregation. Non-blocking — dropped on overflow.
-// Used by the Redis poller to inject queue_depth_high / dlq_nonempty.
+// Used by the Redis poller to inject queue_depth_high / dlq_nonempty. After
+// Shutdown returns, further Enqueues are dropped (the aggregator goroutine
+// has exited and nothing would consume them).
 func (h *Hub) Enqueue(ev events.Event) {
 	if ev.Source == "" {
 		ev.Source = events.SourceObserver
@@ -64,6 +66,12 @@ func (h *Hub) Enqueue(ev events.Event) {
 	}
 	if ev.ID == "" {
 		ev.ID = events.NewEventID()
+	}
+	select {
+	case <-h.stop:
+		h.dropped.Add(1)
+		return
+	default:
 	}
 	select {
 	case h.ch <- ev:

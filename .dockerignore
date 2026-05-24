@@ -1,0 +1,39 @@
+# Keep the build context small. Anything not needed to `go build` stays out.
+
+.git
+.github
+.idea
+.vscode
+.claude
+
+# Build artefacts (rebuilt inside the container)
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Local dev artefacts
+config/keys.yaml
+*.env
+.env
+.envrc
+
+# Test/coverage
+*.test
+*.out
+coverage*
+
+# Docs and infra not consumed by the build
+docs/
+deploy/
+README.md
+AUDIT.md
+SPEC.md
+DECISIONS.md
+Makefile
+
+# OS noise
+.DS_Store
+Thumbs.db

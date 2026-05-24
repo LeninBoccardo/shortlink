@@ -13,7 +13,6 @@ type ShortenJobPayload struct {
 	JobID       string `json:"job_id"`
 	OriginalURL string `json:"original_url"`
 	WebhookURL  string `json:"webhook_url"`
-	APIKeyID    string `json:"api_key_id"`
 	APIKeyHash  string `json:"api_key_hash"`
 	APIKeyHint  string `json:"api_key_hint"`
 	CustomSlug  string `json:"custom_slug,omitempty"`

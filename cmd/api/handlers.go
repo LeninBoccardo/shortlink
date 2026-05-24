@@ -166,7 +166,6 @@ func (a *app) handleShorten(w http.ResponseWriter, r *http.Request) {
 		JobID:       jobID,
 		OriginalURL: req.URL,
 		WebhookURL:  webhookURL,
-		APIKeyID:    uuidString(apiKey.ID),
 		APIKeyHash:  apiKey.KeyHash,
 		APIKeyHint:  apiKey.KeyHint,
 		CustomSlug:  customSlug,
@@ -272,11 +271,3 @@ func newJobID() (string, error) {
 	return "job_" + id.String(), nil
 }
 
-// uuidString renders a pgtype.UUID in canonical 8-4-4-4-12 form.
-func uuidString(u pgtype.UUID) string {
-	if !u.Valid {
-		return ""
-	}
-	b := u.Bytes
-	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
-}

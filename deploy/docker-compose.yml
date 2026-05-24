@@ -1,6 +1,7 @@
 # ShortLink — local infrastructure.
 # Built up across milestones (SPEC §13). Milestone 2: Postgres + MinIO + Redis.
-# Milestone 7 adds Prometheus + Grafana. PgBouncer arrives in M8.
+# Milestone 7 adds Prometheus + Grafana. Milestone 8 adds PgBouncer and the
+# one-shot migrate service.
 #
 # Usage:  docker compose -f deploy/docker-compose.yml up -d   (or: make dev)
 name: shortlink
@@ -46,6 +47,54 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  pgbouncer:
+    # Transaction-pooling proxy in front of Postgres (SPEC §6, §12). In k8s
+    # this carries the entire pod fleet's traffic on a bounded upstream pool;
+    # locally it exists so the compose topology mirrors prod. Apps target
+    # pgbouncer:6432 inside the compose network and host 16432 from the host.
+    image: edoburu/pgbouncer:v1.25.1-p0
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: shortlink
+      DB_PASSWORD: shortlink
+      DB_NAME: shortlink
+      LISTEN_PORT: 6432
+      POOL_MODE: transaction
+      AUTH_TYPE: scram-sha-256
+      MAX_CLIENT_CONN: 200
+      DEFAULT_POOL_SIZE: 20
+      MIN_POOL_SIZE: 4
+      RESERVE_POOL_SIZE: 4
+      # Required for transaction-mode pooling: prepared statements would
+      # otherwise leak between transactions. pgx uses QueryExecModeExec.
+      IGNORE_STARTUP_PARAMETERS: extra_float_digits
+    ports:
+      - "16432:6432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  migrate:
+    # One-shot service that applies goose migrations and exits 0. Use the
+    # same image the cmd/migrate binary builds to in k8s so locally and in
+    # prod we run the exact same migration runner. `restart: no` so a
+    # successful exit is terminal -- compose won't loop it.
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        BINARY: migrate
+    image: shortlink-migrate:dev
+    command: ["up"]
+    environment:
+      DATABASE_URL: postgres://shortlink:shortlink@postgres:5432/shortlink?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    profiles: ["migrate"]
 
   prometheus:
     image: prom/prometheus:v3.2.1

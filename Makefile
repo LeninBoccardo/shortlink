@@ -7,7 +7,7 @@ HELM_RELEASE ?= shortlink
 HELM_NAMESPACE ?= default
 IMAGE_TAG ?= dev
 
-.PHONY: dev dev-down stack-up stack-logs migrate keys run-api run-worker run-observer loadtest build test sqlc tidy \
+.PHONY: dev dev-down stack-up stack-logs migrate keys run-api run-worker run-observer loadtest build test test-integration sqlc tidy \
         images kind-up kind-load k8s-up k8s-down k8s-logs k8s-status
 
 dev: ## start local infrastructure (Postgres + MinIO + Redis + Prometheus + Grafana)
@@ -43,8 +43,11 @@ loadtest: ## run the multi-key vegeta attack (default --duration=60s)
 build: ## build all binaries into ./bin
 	go build -o bin/ ./cmd/...
 
-test: ## run all tests
+test: ## run unit tests (skips integration; no Docker needed)
 	go test ./...
+
+test-integration: ## run end-to-end test against testcontainers (needs Docker)
+	go test -tags integration -timeout 5m -v ./tests/...
 
 sqlc: ## regenerate type-safe query code from internal/db/query
 	sqlc generate

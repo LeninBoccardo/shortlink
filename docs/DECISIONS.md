@@ -387,3 +387,83 @@ modes and make incidents harder to diagnose.
 Pattern proven on the M3+M4+M5 audit (15 findings, all fixed pre-M6 in
 commits `6941fc3..1307dc7 + 3a9072f`). One big end-of-project audit
 would dilute focus; small ones keep code fresh.
+
+---
+
+## 12. Kubernetes & deployment (M8)
+
+### One multi-stage Dockerfile, not five (M8, deviates from SPEC §6)
+SPEC §6 listed `Dockerfile.api / .worker / .observer / .loadtest / .migrate`
+at the repo root. The chart ships one `Dockerfile` with
+`--build-arg BINARY=name`. **Why:** the build steps were going to be
+identical (`go mod download`, `go build ./cmd/<name>`); five files would
+have been five identical copies. **Tradeoff:** loses the at-a-glance
+"there's a Dockerfile per binary" grep target. SPEC §6 was updated to
+match.
+
+### Helm chart under `deploy/k8s/templates/`, not flat manifests (M8)
+SPEC §6 listed flat YAML files under `deploy/k8s/`. The chart is now a
+standard Helm structure (`Chart.yaml`, `values.yaml`, `templates/`).
+**Why:** SPEC §12 already requires a Helm pre-install / pre-upgrade hook
+for the migrate Job; once Helm is in the loop, the templates/ layout is
+the convention. **Tradeoff:** one more level of nesting in the path; the
+README in `deploy/k8s/` makes the entry point obvious.
+
+### Distroless `static-debian12:nonroot` runtime image (M8)
+Runtime stage is `gcr.io/distroless/static-debian12:nonroot`. **Why:**
+zero shell, zero package manager, runs as uid 65532, ships with CA roots
+already trusted. Future PodSecurity restricted policies pass automatically.
+**Rejected:** scratch (no DNS resolver bundled), alpine (musl quirks +
+shell increases attack surface).
+
+### Migrations bypass PgBouncer; apps go through it (M8)
+The migrate Job uses a separate `shortlink.databaseURLDirect` DSN that
+points straight at Postgres on 5432. **Why:** goose runs DDL inside
+transactions, and DDL is unsafe under transaction-mode pooling — a
+prepared-statement sweep mid-migration would corrupt the run. Apps still
+use the pooler via the standard `shortlink.databaseURL` helper.
+
+### KEDA ScaledObject per logical queue (shorten + webhook) (M8)
+One Redis trigger per asynq queue name, both pointed at the same worker
+Deployment. **Why:** the worker handles both queues; KEDA needs to react
+when either is hot. **Rejected:** a single combined `pending` trigger —
+asynq's pending lists are partitioned per queue, there is no aggregate
+key.
+
+### NetworkPolicy at the worker pod with `0.0.0.0/0` minus RFC1918 (M8)
+The egress rule allows public-internet HTTP/HTTPS (customer webhooks)
+but explicitly `except`s `10/8 + 172.16/12 + 192.168/16 + 169.254/16 +
+127/8`. **Why:** defense in depth for the in-code SSRF guard. **Tradeoff:**
+the `except` list covers kind's default Pod CIDR (10.244/16) and Service
+CIDR (10.96/12) because both fall under `10.0.0.0/8`; if your cluster
+uses non-default CIDRs outside RFC1918, broaden `except`. **Requires:** a
+NetworkPolicy-enforcing CNI (Calico, Cilium). kindnet does not enforce.
+
+### Migrate Job uses `helm.sh/hook-delete-policy: before-hook-creation` (M8)
+The previous Job stays around until the next install starts; on success the
+new Job becomes the only one, with `ttlSecondsAfterFinished: 300` to clean
+up. **Why:** a failed migration is the worst time to lose `kubectl logs`
+of the failing pod. **Rejected:** `hook-succeeded` (deletes immediately,
+no diagnostic window) or no policy (Job objects pile up forever).
+
+### Observer stays at 1 replica even in k8s (M8)
+Observer state (key stats + log ring + active pods gauge) lives in memory.
+A second replica would split the aggregation; the live UI would show two
+disjoint snapshots depending on which pod a viewer hit through the Service.
+**Tradeoff:** observer is now a SPOF. Acceptable — its data is recoverable
+on restart (Redis poll gives queue/DLQ depth + pod count; only the log ring
+and per-key stats are truly transient). Horizontal scaling is a v2 concern.
+
+### Worker `terminationGracePeriodSeconds: 60` (M8)
+30s default isn't enough — `DRAIN_TIMEOUT=30s` covers asynq Shutdown but
+in-flight HTTP webhook delivery (up to 10s per attempt) can run inside
+that window. 60s gives the worker a clean tail.
+
+### Single-replica PgBouncer in k8s (M8)
+SPEC §12 mentions PgBouncer; we run one replica with a bounded upstream
+pool (`DEFAULT_POOL_SIZE=20`). **Why:** PgBouncer is stateless but a
+second replica doubles the upstream Postgres connections, defeating its
+purpose. Scale the pool, not the replica count. **Tradeoff:** PgBouncer
+is the path's SPOF; an upgrade or pod restart drops the entire connection
+fleet briefly. Acceptable; production-grade HA would front it with a
+TCP load balancer over 2+ replicas with `DEFAULT_POOL_SIZE` halved.

@@ -203,16 +203,21 @@ shortlink/
 │
 ├── deploy/
 │   ├── docker-compose.yml    # Local stack (built up across milestones — see §13)
-│   ├── k8s/
-│   │   ├── api-deployment.yaml
-│   │   ├── api-service.yaml
-│   │   ├── worker-deployment.yaml
-│   │   ├── worker-scaledobject.yaml   # KEDA queue-depth autoscaler
-│   │   ├── pgbouncer.yaml
-│   │   ├── migrate-job.yaml           # Helm pre-upgrade hook
-│   │   ├── configmap.yaml
-│   │   ├── secrets.yaml
-│   │   └── networkpolicy.yaml         # Worker egress restriction (SSRF defense)
+│   ├── k8s/                  # Helm chart (SPEC §12)
+│   │   ├── Chart.yaml
+│   │   ├── values.yaml
+│   │   ├── README.md         # Cluster prereqs (Calico, KEDA) + quickstart
+│   │   └── templates/
+│   │       ├── _helpers.tpl
+│   │       ├── configmap.yaml
+│   │       ├── secret.yaml
+│   │       ├── api-deployment.yaml         # + Service
+│   │       ├── worker-deployment.yaml
+│   │       ├── worker-scaledobject.yaml    # KEDA queue-depth autoscaler
+│   │       ├── observer-deployment.yaml    # + Service
+│   │       ├── pgbouncer.yaml              # Deployment + Service
+│   │       ├── migrate-job.yaml            # Helm pre-install/pre-upgrade hook
+│   │       └── networkpolicy.yaml          # Worker egress (SSRF defense)
 │   ├── prometheus/           # prometheus.yml
 │   └── grafana/              # provisioned dashboards + datasource JSON
 │
@@ -220,12 +225,9 @@ shortlink/
 │   └── keys.yaml             # Load test key profiles (gitignored — see §13)
 │
 ├── sqlc.yaml                 # sqlc codegen config
-├── Makefile                  # make dev, make migrate, make keys, make loadtest, make build
-├── Dockerfile.api
-├── Dockerfile.worker
-├── Dockerfile.observer
-├── Dockerfile.loadtest
-├── Dockerfile.migrate
+├── Makefile                  # make dev / migrate / keys / loadtest / build / k8s-up
+├── Dockerfile                # Multi-stage; --build-arg BINARY={api|worker|observer|loadtest|migrate|keygen}
+├── .dockerignore
 ├── go.mod
 ├── go.sum
 └── README.md

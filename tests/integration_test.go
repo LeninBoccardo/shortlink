@@ -17,8 +17,6 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
-	"crypto/sha512"
-	cryptorand "crypto/rand"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -37,7 +35,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/stdlib"
+	_ "github.com/jackc/pgx/v5/stdlib" // registers "pgx" with database/sql
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/pressly/goose/v3"
@@ -679,9 +677,3 @@ func freePort() (int, error) {
 	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
-// Suppress unused-import warnings if the file gets trimmed in future edits.
-var (
-	_ = stdlib.GetDefaultDriver
-	_ = sha512.New
-	_ = cryptorand.Reader
-)

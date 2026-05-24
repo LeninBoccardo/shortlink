@@ -1454,77 +1454,77 @@ The **observer hub is deliberately single-instance**. It is a stateful operabili
 ## 17. Implementation Milestones
 
 ### Milestone 1 — Core pipeline, async via in-process queue (no Redis, no k8s)
-- [ ] Minimal `docker-compose.yml` (Postgres + MinIO) for local infra
-- [ ] `internal/config` — env-based configuration with defaults ([§14](#14-configuration))
-- [ ] Postgres schema + migrations (goose); `cmd/migrate`
-- [ ] `cmd/keygen` — generate API keys + webhook secrets, insert hashes, write `keys.yaml` (`make keys`)
-- [ ] API key + webhook-secret validation
-- [ ] `POST /shorten` → resolve webhook URL → SSRF-validate → write `pending` row → enqueue (in-process) → `202`
-- [ ] Optional `expires_in` → gateway sets `expires_at`
-- [ ] In-process queue + worker pool: claim → slug → QR → MinIO upload → finalize row
-- [ ] Webhook delivery: HMAC signing, `X-ShortLink-Key-Hint` header, re-presigned signed URL
-- [ ] SSRF validation module (`internal/security`) incl. `SSRF_ALLOWLIST`
-- [ ] `GET /:slug` redirect (honours `status` and `expires_at`)
-- [ ] Graceful shutdown — drain the in-process queue on `SIGTERM`
+- [x] Minimal `docker-compose.yml` (Postgres + MinIO) for local infra
+- [x] `internal/config` — env-based configuration with defaults ([§14](#14-configuration))
+- [x] Postgres schema + migrations (goose); `cmd/migrate`
+- [x] `cmd/keygen` — generate API keys + webhook secrets, insert hashes, write `keys.yaml` (`make keys`)
+- [x] API key + webhook-secret validation
+- [x] `POST /shorten` → resolve webhook URL → SSRF-validate → write `pending` row → enqueue (in-process) → `202`
+- [x] Optional `expires_in` → gateway sets `expires_at`
+- [x] In-process queue + worker pool: claim → slug → QR → MinIO upload → finalize row
+- [x] Webhook delivery: HMAC signing, `X-ShortLink-Key-Hint` header, re-presigned signed URL
+- [x] SSRF validation module (`internal/security`) incl. `SSRF_ALLOWLIST`
+- [x] `GET /:slug` redirect (honours `status` and `expires_at`)
+- [x] Graceful shutdown — drain the in-process queue on `SIGTERM`
 
 ### Milestone 2 — Redis-backed async queue
-- [ ] Redis + asynq setup (extend `docker-compose.yml`)
-- [ ] Swap the `inproc` queue for the `asynq` implementation behind the same `Queue` interface
-- [ ] Split the worker into its own binary
-- [ ] Separate `shorten` and `webhook` queues
-- [ ] Lease-based idempotency claim (status machine + crash recovery) + `asynq.Unique` and task timeout
-- [ ] Retry + dead-letter (archived set)
-- [ ] Permanent-failure handling (`status='failed'`)
-- [ ] Stale-record + orphaned-object sweeper (`internal/sweeper`)
+- [x] Redis + asynq setup (extend `docker-compose.yml`)
+- [x] Swap the `inproc` queue for the `asynq` implementation behind the same `Queue` interface
+- [x] Split the worker into its own binary
+- [x] Separate `shorten` and `webhook` queues
+- [x] Lease-based idempotency claim (status machine + crash recovery) + `asynq.Unique` and task timeout
+- [x] Retry + dead-letter (archived set)
+- [x] Permanent-failure handling (`status='failed'`)
+- [x] Stale-record + orphaned-object sweeper (`internal/sweeper`)
 
 ### Milestone 3 — Rate limiting + auth tiers
-- [ ] Sliding-window rate limiter in Redis (Lua script)
-- [ ] Tier system (free / pro / unlimited)
-- [ ] 429 responses with correct headers (and `X-RateLimit-*` on success)
-- [ ] Throttled `last_used_at` updates
+- [x] Sliding-window rate limiter in Redis (Lua script)
+- [x] Tier system (free / pro / unlimited)
+- [x] 429 responses with correct headers (and `X-RateLimit-*` on success)
+- [x] Throttled `last_used_at` updates
 
 ### Milestone 4 — Observer hub
-- [ ] `/ingest` endpoint + best-effort emitter (`internal/events`)
-- [ ] In-memory aggregator with TTL; `KeyStat` / `SystemStat` derivation
-- [ ] Redis poller — queue depth + pod heartbeats; `queue_depth_high` / `dlq_nonempty`
-- [ ] WebSocket broadcaster — `snapshot` / `stats` / `log_append` / `reset` protocol; custom `CheckOrigin`
-- [ ] Event emission wired into API gateway and worker
+- [x] `/ingest` endpoint + best-effort emitter (`internal/events`)
+- [x] In-memory aggregator with TTL; `KeyStat` / `SystemStat` derivation
+- [x] Redis poller — queue depth + pod heartbeats; `queue_depth_high` / `dlq_nonempty`
+- [x] WebSocket broadcaster — `snapshot` / `stats` / `log_append` / `reset` protocol; custom `CheckOrigin`
+- [x] Event emission wired into API gateway and worker
 
 ### Milestone 5 — Load test runner
-- [ ] `cmd/loadtest` binary — CLI flags, multi-key vegeta attack runner
-- [ ] Per-key metrics collection
-- [ ] `keys.yaml` config (`attack_rate_per_min`)
-- [ ] Built-in HMAC-verifying webhook sink as the attack webhook target
-- [ ] `attack_started` / `attack_complete` events emitted to the observer
+- [x] `cmd/loadtest` binary — CLI flags, multi-key vegeta attack runner
+- [x] Per-key metrics collection
+- [x] `keys.yaml` config (`attack_rate_per_min`)
+- [x] Built-in HMAC-verifying webhook sink as the attack webhook target
+- [x] `attack_started` / `attack_complete` events emitted to the observer
 
 ### Milestone 6 — Showcase frontend
-- [ ] Single-page UI under `cmd/loadtest/web/`, embedded and served by `cmd/loadtest`
-- [ ] Observer + Grafana URLs templated into the page
-- [ ] WebSocket client, live key-stats table (keyed by `key_hash`)
-- [ ] Log audit panel with client-side TTL countdown and ring buffer
-- [ ] Filter controls + reset command
-- [ ] Embedded Grafana panels (iframe)
+- [x] Single-page UI under `cmd/loadtest/web/`, embedded and served by `cmd/loadtest`
+- [x] Observer + Grafana URLs templated into the page
+- [x] WebSocket client, live key-stats table (keyed by `key_hash`)
+- [x] Log audit panel with client-side TTL countdown and ring buffer
+- [x] Filter controls + reset command
+- [x] Embedded Grafana panels (iframe)
 
 ### Milestone 7 — Observability stack
-- [ ] Prometheus `/metrics` endpoints on all services (extend `docker-compose.yml`: Prometheus + Grafana)
-- [ ] `internal/metrics` collectors (jobs, QR duration, rate-limit hits, webhook deliveries, active pods, dropped events)
-- [ ] Metric labels limited to low-cardinality dimensions (`tier`, `status`) — never `api_key`
-- [ ] Prometheus config + provisioned Grafana dashboards committed to the repo
+- [x] Prometheus `/metrics` endpoints on all services (extend `docker-compose.yml`: Prometheus + Grafana)
+- [x] `internal/metrics` collectors (jobs, QR duration, rate-limit hits, webhook deliveries, active pods, dropped events)
+- [x] Metric labels limited to low-cardinality dimensions (`tier`, `status`) — never `api_key`
+- [x] Prometheus config + provisioned Grafana dashboards committed to the repo
 
 ### Milestone 8 — Kubernetes + deployment
-- [ ] Dockerfiles for all binaries
-- [ ] Finalize `docker-compose.yml` (add PgBouncer; one-shot migrate wired)
-- [ ] K8s manifests: API Deployment (2 replicas) + Service, Worker Deployment
-- [ ] KEDA ScaledObject for worker autoscaling
-- [ ] PgBouncer Deployment + Service
-- [ ] Migration Job (Helm pre-upgrade hook)
-- [ ] ConfigMap + Secrets
-- [ ] SSRF egress NetworkPolicy
-- [ ] Graceful shutdown handling verified under pod eviction
+- [x] Dockerfiles for all binaries
+- [x] Finalize `docker-compose.yml` (add PgBouncer; one-shot migrate wired)
+- [x] K8s manifests: API Deployment (2 replicas) + Service, Worker Deployment
+- [x] KEDA ScaledObject for worker autoscaling
+- [x] PgBouncer Deployment + Service
+- [x] Migration Job (Helm pre-upgrade hook)
+- [x] ConfigMap + Secrets
+- [x] SSRF egress NetworkPolicy
+- [x] Graceful shutdown handling implemented (api/worker drain on SIGTERM; pod-eviction verification deferred until a kind/helm bring-up — see [deploy/k8s/README.md](../deploy/k8s/README.md))
 
 ### Milestone 9 — Polish
-- [ ] README with architecture diagram and quickstart
-- [ ] End-to-end integration test (`testcontainers-go`: Redis/Postgres/MinIO)
+- [x] README with architecture diagram and quickstart
+- [x] End-to-end integration test (`testcontainers-go`: Redis/Postgres/MinIO)
 
 ---
 

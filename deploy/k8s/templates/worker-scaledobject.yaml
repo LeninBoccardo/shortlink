@@ -1,0 +1,31 @@
+{{- if .Values.keda.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{ include "shortlink.componentName" (dict "root" . "component" "worker") }}
+  labels:
+    {{- include "shortlink.componentLabels" (dict "root" . "component" "worker") | nindent 4 }}
+spec:
+  # Target the worker Deployment by name -- KEDA flips replicas on a
+  # HorizontalPodAutoscaler it manages under the hood.
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "shortlink.componentName" (dict "root" . "component" "worker") }}
+  pollingInterval: {{ .Values.keda.worker.pollingInterval }}
+  cooldownPeriod: {{ .Values.keda.worker.cooldownPeriod }}
+  minReplicaCount: {{ .Values.keda.worker.minReplicas }}
+  maxReplicaCount: {{ .Values.keda.worker.maxReplicas }}
+  # SPEC §12: KEDA's Redis scaler watches asynq's pending list directly.
+  # asynq stores pending tasks under key "asynq:{<queue>}:pending"; we
+  # publish one trigger per logical queue (shorten + webhook) so the
+  # autoscaler reacts to whichever queue is hot.
+  triggers:
+    {{- range .Values.keda.worker.queues }}
+    - type: redis
+      metadata:
+        address: {{ $.Values.redis.url | replace "redis://" "" | quote }}
+        listName: {{ printf "asynq:{%s}:pending" . | quote }}
+        listLength: {{ $.Values.keda.worker.queueLength | quote }}
+    {{- end }}
+{{- end }}

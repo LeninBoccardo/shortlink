@@ -61,11 +61,11 @@ func NewBroadcaster(hub *Hub, log *slog.Logger) *Broadcaster {
 			ReadBufferSize:  1024,
 			WriteBufferSize: 4096,
 			CheckOrigin: func(r *http.Request) bool {
-				origin := r.Header.Get("Origin")
-				if origin == "" {
-					return true // non-browser client (e.g. curl wscat)
-				}
-				return allowedOrigins[origin]
+				// Browsers always send Origin on WebSocket upgrades. Allowing
+				// an empty Origin would let any local process (wscat, curl)
+				// connect and harvest key hints / webhook URLs from the
+				// broadcast — so we require an explicit allowlisted Origin.
+				return allowedOrigins[r.Header.Get("Origin")]
 			},
 		},
 		clients: make(map[*client]struct{}),

@@ -10,6 +10,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/leninboccardo/shortlink/internal/events"
+	"github.com/leninboccardo/shortlink/internal/metrics"
 	"github.com/leninboccardo/shortlink/internal/queue"
 )
 
@@ -71,18 +72,22 @@ func (p *Poller) tick(ctx context.Context) {
 		if err != nil {
 			// Queue may not exist yet (no jobs ever enqueued) — that's fine.
 			p.log.Debug("inspect queue", "queue", name, "error", err)
+			metrics.QueueDepth.WithLabelValues(name).Set(0)
 			continue
 		}
 		totalPending += int64(info.Pending)
 		totalArchived += int64(info.Archived)
+		metrics.QueueDepth.WithLabelValues(name).Set(float64(info.Pending))
 	}
 	p.hub.State().SetQueueDepth(totalPending)
+	metrics.DLQDepth.Set(float64(totalArchived))
 
 	pods, err := p.countAlivePods(ctx)
 	if err != nil {
 		p.log.Debug("count alive pods", "error", err)
 	} else {
 		p.hub.State().SetPodCount(pods)
+		metrics.ActivePods.Set(float64(pods))
 	}
 
 	// Edge-emit: only fire queue_depth_high on the tick we cross the threshold,

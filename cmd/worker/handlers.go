@@ -13,6 +13,7 @@ import (
 
 	"github.com/leninboccardo/shortlink/internal/db"
 	"github.com/leninboccardo/shortlink/internal/events"
+	"github.com/leninboccardo/shortlink/internal/metrics"
 	"github.com/leninboccardo/shortlink/internal/qrcode"
 	"github.com/leninboccardo/shortlink/internal/queue"
 	"github.com/leninboccardo/shortlink/internal/shortener"
@@ -23,6 +24,9 @@ import (
 // finalize -> enqueue webhook (SPEC §4.2).
 func (w *worker) handleShortenJob(ctx context.Context, payload []byte) error {
 	started := time.Now()
+	defer func() {
+		metrics.JobDurationSeconds.WithLabelValues(metrics.QueueShorten).Observe(time.Since(started).Seconds())
+	}()
 	var p queue.ShortenJobPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fmt.Errorf("unmarshal shorten payload: %w", err)
@@ -53,7 +57,9 @@ func (w *worker) handleShortenJob(ctx context.Context, payload []byte) error {
 			}
 			slug = s
 		}
+		qrStart := time.Now()
 		png, err := qrcode.Generate(w.cfg.ShortURLBase+"/"+slug, w.cfg.QRSize)
+		metrics.QRGenerateDurationSeconds.Observe(time.Since(qrStart).Seconds())
 		if err != nil {
 			return w.shortenFailed(ctx, p, lease, fmt.Errorf("generate qr: %w", err))
 		}
@@ -93,6 +99,7 @@ func (w *worker) handleShortenJob(ctx context.Context, payload []byte) error {
 			"duration_ms": time.Since(started).Milliseconds(),
 		},
 	})
+	metrics.JobsTotal.WithLabelValues(metrics.QueueShorten, metrics.JobStatusComplete).Inc()
 	w.enqueueWebhook(ctx, p.JobID)
 	return nil
 }
@@ -121,6 +128,10 @@ func (w *worker) handleUnclaimable(ctx context.Context, jobID string) error {
 // schedule and archives to the dead-letter set; the short_urls status is never
 // changed — the short URL was created, only delivery failed.
 func (w *worker) handleWebhookJob(ctx context.Context, payload []byte) error {
+	started := time.Now()
+	defer func() {
+		metrics.JobDurationSeconds.WithLabelValues(metrics.QueueWebhook).Observe(time.Since(started).Seconds())
+	}()
 	var p queue.WebhookJobPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fmt.Errorf("unmarshal webhook payload: %w", err)
@@ -174,7 +185,10 @@ func (w *worker) handleWebhookJob(ctx context.Context, payload []byte) error {
 		OriginalURL: row.OriginalUrl,
 		CreatedAt:   row.CreatedAt.Time.UTC().Format(time.RFC3339),
 	}
-	if err := w.dispatcher.Deliver(ctx, row.WebhookUrl, apiKey.WebhookSecret, apiKey.KeyHint, body); err != nil {
+	deliverStart := time.Now()
+	err = w.dispatcher.Deliver(ctx, row.WebhookUrl, apiKey.WebhookSecret, apiKey.KeyHint, body)
+	metrics.WebhookDurationSeconds.Observe(time.Since(deliverStart).Seconds())
+	if err != nil {
 		final := queue.IsLastAttempt(ctx)
 		if final {
 			w.log.Error("webhook delivery permanently failed (archived)", "job_id", p.JobID, "error", err)
@@ -191,6 +205,12 @@ func (w *worker) handleWebhookJob(ctx context.Context, payload []byte) error {
 				"final_attempt": final,
 			},
 		})
+		metrics.WebhookAttemptsTotal.WithLabelValues(metrics.WebhookStatusFailure).Inc()
+		if final {
+			metrics.JobsTotal.WithLabelValues(metrics.QueueWebhook, metrics.JobStatusDLQ).Inc()
+		} else {
+			metrics.JobsTotal.WithLabelValues(metrics.QueueWebhook, metrics.JobStatusError).Inc()
+		}
 		return fmt.Errorf("deliver webhook for %s: %w", p.JobID, err)
 	}
 	w.log.Info("webhook delivered", "job_id", p.JobID, "target", row.WebhookUrl)
@@ -205,6 +225,8 @@ func (w *worker) handleWebhookJob(ctx context.Context, payload []byte) error {
 			"target": row.WebhookUrl,
 		},
 	})
+	metrics.WebhookAttemptsTotal.WithLabelValues(metrics.WebhookStatusSuccess).Inc()
+	metrics.JobsTotal.WithLabelValues(metrics.QueueWebhook, metrics.JobStatusComplete).Inc()
 	return nil
 }
 
@@ -240,6 +262,7 @@ func (w *worker) shortenFailed(ctx context.Context, p queue.ShortenJobPayload, l
 				"error_class": errClass(cause),
 			},
 		})
+		metrics.JobsTotal.WithLabelValues(metrics.QueueShorten, metrics.JobStatusError).Inc()
 		return cause
 	}
 	rows, err := w.queries.FailShortURL(ctx, db.FailShortURLParams{JobID: jobID, Lease: lease})
@@ -262,6 +285,7 @@ func (w *worker) shortenFailed(ctx context.Context, p queue.ShortenJobPayload, l
 			"error_class": errClass(cause),
 		},
 	})
+	metrics.JobsTotal.WithLabelValues(metrics.QueueShorten, metrics.JobStatusDLQ).Inc()
 	return cause
 }
 

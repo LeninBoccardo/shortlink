@@ -83,11 +83,13 @@ func (a *app) handleShorten(w http.ResponseWriter, r *http.Request) {
 
 	var req shortenRequest
 	if err := json.NewDecoder(io.LimitReader(r.Body, maxRequestBody)).Decode(&req); err != nil {
+		metrics.ShortenRequestsTotal.WithLabelValues(metrics.ShortenStatusRejectedValidation).Inc()
 		httpx.WriteError(w, http.StatusBadRequest, "malformed JSON body")
 		return
 	}
 
 	if err := a.validateSubmittedURL(req.URL); err != nil {
+		metrics.ShortenRequestsTotal.WithLabelValues(metrics.ShortenStatusRejectedValidation).Inc()
 		httpx.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -98,11 +100,13 @@ func (a *app) handleShorten(w http.ResponseWriter, r *http.Request) {
 		webhookURL = apiKey.WebhookUrl.String
 	}
 	if webhookURL == "" {
+		metrics.ShortenRequestsTotal.WithLabelValues(metrics.ShortenStatusRejectedValidation).Inc()
 		httpx.WriteError(w, http.StatusBadRequest, "no webhook URL: none in request and no key default")
 		return
 	}
 	if err := a.ssrf.ValidateURL(r.Context(), webhookURL); err != nil {
 		a.log.Warn("webhook url rejected", "error", err)
+		metrics.ShortenRequestsTotal.WithLabelValues(metrics.ShortenStatusRejectedValidation).Inc()
 		httpx.WriteError(w, http.StatusUnprocessableEntity, "webhook URL failed SSRF validation")
 		return
 	}
@@ -110,12 +114,14 @@ func (a *app) handleShorten(w http.ResponseWriter, r *http.Request) {
 	customSlug := strings.TrimSpace(req.CustomSlug)
 	if customSlug != "" {
 		if err := shortener.ValidateCustomSlug(customSlug); err != nil {
+			metrics.ShortenRequestsTotal.WithLabelValues(metrics.ShortenStatusRejectedValidation).Inc()
 			httpx.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
 
 	if req.ExpiresIn < 0 || req.ExpiresIn > maxExpiresIn {
+		metrics.ShortenRequestsTotal.WithLabelValues(metrics.ShortenStatusRejectedValidation).Inc()
 		httpx.WriteError(w, http.StatusBadRequest, "expires_in out of range")
 		return
 	}
@@ -195,6 +201,7 @@ func (a *app) handleShorten(w http.ResponseWriter, r *http.Request) {
 			"custom_slug": customSlug != "",
 		},
 	})
+	metrics.ShortenRequestsTotal.WithLabelValues(metrics.ShortenStatusAccepted).Inc()
 
 	httpx.WriteJSON(w, http.StatusAccepted, shortenResponse{
 		JobID:   jobID,

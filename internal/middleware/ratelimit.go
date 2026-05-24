@@ -12,6 +12,7 @@ import (
 	"github.com/leninboccardo/shortlink/internal/auth"
 	"github.com/leninboccardo/shortlink/internal/events"
 	"github.com/leninboccardo/shortlink/internal/httpx"
+	"github.com/leninboccardo/shortlink/internal/metrics"
 )
 
 // LimitForTier resolves a tier name to its per-window request budget. A value
@@ -78,9 +79,12 @@ func RateLimit(rl *auth.RateLimiter, limitFor LimitForTier, em *events.Emitter, 
 						"retry_after": retryAfter,
 					},
 				})
+				metrics.RateLimitHitsTotal.WithLabelValues(key.Tier, metrics.RateDecisionLimited).Inc()
+				metrics.ShortenRequestsTotal.WithLabelValues(metrics.ShortenStatusRejectedRateLimit).Inc()
 				httpx.WriteError(w, http.StatusTooManyRequests, "rate limit exceeded")
 				return
 			}
+			metrics.RateLimitHitsTotal.WithLabelValues(key.Tier, metrics.RateDecisionAllowed).Inc()
 			next.ServeHTTP(w, r)
 		})
 	}

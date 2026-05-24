@@ -11,6 +11,7 @@ import (
 	"github.com/leninboccardo/shortlink/internal/db"
 	"github.com/leninboccardo/shortlink/internal/events"
 	"github.com/leninboccardo/shortlink/internal/httpx"
+	"github.com/leninboccardo/shortlink/internal/metrics"
 )
 
 type ctxKey int
@@ -44,6 +45,7 @@ func Auth(v *auth.Validator, t *auth.LastUsedToucher, em *events.Emitter, log *s
 						"method": r.Method,
 					},
 				})
+				metrics.ShortenRequestsTotal.WithLabelValues(metrics.ShortenStatusRejectedAuth).Inc()
 				httpx.WriteError(w, http.StatusUnauthorized, "missing or invalid API key")
 				return
 			}

@@ -25,13 +25,13 @@ var pollerQueues = []string{queue.TypeShorten, queue.TypeWebhook}
 // pod:{POD_ID}:alive keys. It writes results into the Hub's State and
 // enqueues queue_depth_high / dlq_nonempty events when thresholds trip.
 type Poller struct {
-	hub        *Hub
-	inspector  *asynq.Inspector
-	rc         *redis.Client
-	threshold  int64
-	log        *slog.Logger
-	lastHighOK bool // last tick's "queue depth high" state, for edge detection
-	lastDLQOK  bool
+	hub                    *Hub
+	inspector              *asynq.Inspector
+	rc                     *redis.Client
+	threshold              int64
+	log                    *slog.Logger
+	wasHighLastTick        bool // last tick's "queue depth high" state, for edge detection
+	wasDLQNonemptyLastTick bool
 }
 
 // NewPoller wires a poller. inspector reads asynq queue metadata; rc is a
@@ -88,7 +88,7 @@ func (p *Poller) tick(ctx context.Context) {
 	// Edge-emit: only fire queue_depth_high on the tick we cross the threshold,
 	// not every 5s while we're above it. Same idea for dlq_nonempty.
 	highNow := totalPending > p.threshold
-	if highNow && !p.lastHighOK {
+	if highNow && !p.wasHighLastTick {
 		p.hub.Enqueue(events.Event{
 			Source:  events.SourceObserver,
 			Level:   events.LevelWarn,
@@ -100,10 +100,10 @@ func (p *Poller) tick(ctx context.Context) {
 			},
 		})
 	}
-	p.lastHighOK = highNow
+	p.wasHighLastTick = highNow
 
 	dlqNow := totalArchived > 0
-	if dlqNow && !p.lastDLQOK {
+	if dlqNow && !p.wasDLQNonemptyLastTick {
 		p.hub.Enqueue(events.Event{
 			Source:  events.SourceObserver,
 			Level:   events.LevelWarn,
@@ -114,7 +114,7 @@ func (p *Poller) tick(ctx context.Context) {
 			},
 		})
 	}
-	p.lastDLQOK = dlqNow
+	p.wasDLQNonemptyLastTick = dlqNow
 }
 
 // countAlivePods counts pod:*:alive keys via SCAN — avoid KEYS, which is

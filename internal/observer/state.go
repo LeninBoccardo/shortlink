@@ -95,6 +95,11 @@ const (
 	LatencyWindow = 60 * time.Second
 	defaultLogTTL = 2 * time.Minute
 	UntilPodStops = 24 * time.Hour // pod_started TTL — "until the pod reports stopped"
+
+	// keyStatsIdleEvict is the LastSeen threshold past which Prune drops a
+	// KeyStat entry entirely. Keeps the keyStats map from growing without
+	// bound for keys that stop being used (e.g. revoked test keys).
+	keyStatsIdleEvict = 1 * time.Hour
 )
 
 // logTTLs maps an event kind to its retention in the log ring (SPEC §4.3).
@@ -259,7 +264,14 @@ func (s *State) Prune(now time.Time) {
 		s.logCount = n
 	}
 	cutoff := now.Add(-LatencyWindow)
-	for _, ks := range s.keyStats {
+	idleCutoff := now.Add(-keyStatsIdleEvict)
+	for hash, ks := range s.keyStats {
+		// Drop entries for keys we haven't heard from in a while — keeps the
+		// map bounded over multi-day uptimes (revoked test keys etc.).
+		if !ks.LastSeen.IsZero() && ks.LastSeen.Before(idleCutoff) {
+			delete(s.keyStats, hash)
+			continue
+		}
 		if len(ks.latencySamples) == 0 {
 			continue
 		}
@@ -268,6 +280,13 @@ func (s *State) Prune(now time.Time) {
 			if !sample.at.Before(cutoff) {
 				kept = append(kept, sample)
 			}
+		}
+		// If the backing array has grown much larger than the live window,
+		// reallocate to release the unused tail back to the GC.
+		if cap(kept) > 4*len(kept) && cap(kept) > 64 {
+			fresh := make([]latencySample, len(kept))
+			copy(fresh, kept)
+			kept = fresh
 		}
 		ks.latencySamples = kept
 		ks.P99Latency = computeP99(ks.latencySamples)

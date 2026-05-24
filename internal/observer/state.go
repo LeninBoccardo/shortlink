@@ -314,23 +314,42 @@ func (s *State) resetStats() {
 	s.mu.Unlock()
 }
 
-// Snapshot returns deep copies safe to ship over the wire without holding the
-// lock. Callers must not mutate the result. Logs are returned newest-first.
+// Snapshot returns deep copies of every part of state — full key stats, the
+// entire log ring, and the system block. Used for the one-shot WS frame the
+// broadcaster sends each newly-connected client. Hot-path code that ticks
+// every 500ms should use StatsSnapshot instead so it doesn't pay the log copy.
 func (s *State) Snapshot() (keys []KeyStat, logs []LogEntry, system SystemStat, ts time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	keys = make([]KeyStat, 0, len(s.keyStats))
+	keys = s.snapshotKeysLocked()
+	logs = make([]LogEntry, s.logCount)
+	for i := 0; i < s.logCount; i++ {
+		logs[i] = s.logs[s.logIndex(i)]
+	}
+	return keys, logs, s.system, s.updatedAt
+}
+
+// StatsSnapshot returns only the key stats + system block — no logs. The
+// broadcaster ticks at 500ms × per-connected-client and only needs these
+// fields in the periodic stats frame; logs are already shipped diff-only via
+// LogsSince, so copying the whole log ring per tick was pure waste.
+func (s *State) StatsSnapshot() (keys []KeyStat, system SystemStat, ts time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.snapshotKeysLocked(), s.system, s.updatedAt
+}
+
+// snapshotKeysLocked deep-copies keyStats into a sorted []KeyStat. Caller
+// must hold s.mu.
+func (s *State) snapshotKeysLocked() []KeyStat {
+	keys := make([]KeyStat, 0, len(s.keyStats))
 	for _, ks := range s.keyStats {
 		ksCopy := *ks
 		ksCopy.latencySamples = nil // exported snapshot doesn't carry raw samples
 		keys = append(keys, ksCopy)
 	}
 	sort.Slice(keys, func(i, j int) bool { return keys[i].KeyHash < keys[j].KeyHash })
-	logs = make([]LogEntry, s.logCount)
-	for i := 0; i < s.logCount; i++ {
-		logs[i] = s.logs[s.logIndex(i)]
-	}
-	return keys, logs, s.system, s.updatedAt
+	return keys
 }
 
 // LogsSince returns up to (cursor - lastSeenN) newest log entries, and the

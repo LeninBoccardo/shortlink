@@ -216,7 +216,7 @@ func (b *Broadcaster) disconnect(c *client) {
 // from each client's own cursor (so reconnects don't replay anyone else's
 // already-shipped logs).
 func (b *Broadcaster) broadcastTick() {
-	keys, _, system, ts := b.hub.State().Snapshot()
+	keys, system, ts := b.hub.State().StatsSnapshot()
 	stats := struct {
 		Type     string     `json:"type"`
 		TS       time.Time  `json:"ts"`

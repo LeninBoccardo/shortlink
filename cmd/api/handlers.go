@@ -89,7 +89,11 @@ func (a *app) handleShorten(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.validateSubmittedURL(req.URL); err != nil {
-		httpx.WriteError(w, http.StatusBadRequest, err.Error())
+		status := http.StatusBadRequest
+		if errors.Is(err, errBlockedHost) {
+			status = http.StatusUnprocessableEntity // SPEC §9
+		}
+		httpx.WriteError(w, status, err.Error())
 		return
 	}
 
@@ -225,6 +229,10 @@ func (a *app) handleRedirect(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, row.OriginalUrl, http.StatusFound)
 }
 
+// errBlockedHost is returned by validateSubmittedURL when the URL's host
+// matches a URL_BLOCKLIST entry. The handler maps it to 422 per SPEC §9.
+var errBlockedHost = errors.New("url domain is blocked")
+
 // validateSubmittedURL checks the URL being shortened (SPEC §9, URL validation).
 func (a *app) validateSubmittedURL(raw string) error {
 	if raw == "" {
@@ -247,7 +255,7 @@ func (a *app) validateSubmittedURL(raw string) error {
 	for _, blocked := range a.cfg.URLBlocklist {
 		b := strings.ToLower(strings.TrimSpace(blocked))
 		if b != "" && (host == b || strings.HasSuffix(host, "."+b)) {
-			return errors.New("url domain is blocked")
+			return errBlockedHost
 		}
 	}
 	return nil

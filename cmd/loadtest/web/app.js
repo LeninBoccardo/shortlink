@@ -449,11 +449,13 @@
     socket: function () { return ws; },
   };
 
-  // Point each slot's iframe at its provisioned Grafana dashboard. The uids
-  // (jobs-error-rate, qr-queue-depth) match the dashboard JSON committed in
-  // deploy/grafana/dashboards/. kiosk=tv hides the chrome; theme=dark blends
-  // into the showcase. If grafana_url is missing we mark the slot no-grafana
-  // and the CSS shows the fallback hint instead of a broken iframe.
+  // Point each slot's iframe at its provisioned Grafana panel. We embed
+  // individual panels via /d-solo/<uid>/<slug>?panelId=N -- chromeless by
+  // design (no breadcrumb, no sign-in button, no time picker), which is the
+  // standard Grafana embed path. The slot's data-uid + data-panel-id tell
+  // wireGrafanaSlots which panel to load. If grafana_url is missing we mark
+  // the slot no-grafana and the CSS shows the fallback hint instead of a
+  // broken iframe.
   (function wireGrafanaSlots() {
     var base = cfg.grafana_url || "";
     var slots = document.querySelectorAll(".grafana-slot");
@@ -467,11 +469,15 @@
         continue;
       }
       slot.classList.remove("no-grafana");
-      var uid = iframe ? iframe.getAttribute("data-uid") : null;
-      if (iframe && uid) {
+      var uid = slot.getAttribute("data-uid");
+      var panelId = slot.getAttribute("data-panel-id");
+      if (iframe && uid && panelId) {
+        // The slug after the uid is decorative -- Grafana looks the dashboard
+        // up by uid -- but the segment is required by the route.
         iframe.src = base.replace(/\/+$/, "") +
-          "/d/" + encodeURIComponent(uid) +
-          "?kiosk=tv&theme=dark&refresh=5s&from=now-15m&to=now";
+          "/d-solo/" + encodeURIComponent(uid) + "/_" +
+          "?panelId=" + encodeURIComponent(panelId) +
+          "&theme=dark&refresh=5s&from=now-15m&to=now&orgId=1";
       }
     }
   })();

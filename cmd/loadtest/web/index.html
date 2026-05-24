@@ -45,17 +45,29 @@
   <section class="panel" id="panel-monitoring">
     <h2>Monitoring <span class="hint">embedded Grafana panels</span></h2>
     <div class="grafana-grid">
-      <div class="grafana-slot" id="grafana-jobs" data-panel="jobs-error-rate">
-        <strong>jobs/sec · error rate</strong>
-        <iframe class="grafana-frame" data-uid="jobs-error-rate" title="Jobs · Error rate"
+      <div class="grafana-slot" data-uid="jobs-error-rate" data-panel-id="1">
+        <strong>jobs/sec by status</strong>
+        <iframe class="grafana-frame" title="Jobs/sec by terminal status"
                 loading="lazy" sandbox="allow-scripts allow-same-origin allow-popups"></iframe>
-        <p class="hint grafana-fallback" id="grafana-jobs-url">Grafana not configured.</p>
+        <p class="hint grafana-fallback">Grafana not configured.</p>
       </div>
-      <div class="grafana-slot" id="grafana-qr" data-panel="qr-queue-depth">
-        <strong>QR gen p99 · queue depth</strong>
-        <iframe class="grafana-frame" data-uid="qr-queue-depth" title="QR latency · Queue depth"
+      <div class="grafana-slot" data-uid="qr-queue-depth" data-panel-id="1">
+        <strong>QR generate latency</strong>
+        <iframe class="grafana-frame" title="QR generate latency"
                 loading="lazy" sandbox="allow-scripts allow-same-origin allow-popups"></iframe>
-        <p class="hint grafana-fallback" id="grafana-qr-url">Grafana not configured.</p>
+        <p class="hint grafana-fallback">Grafana not configured.</p>
+      </div>
+      <div class="grafana-slot" data-uid="jobs-error-rate" data-panel-id="2">
+        <strong>error rate (5m)</strong>
+        <iframe class="grafana-frame" title="Error rate (5m)"
+                loading="lazy" sandbox="allow-scripts allow-same-origin allow-popups"></iframe>
+        <p class="hint grafana-fallback">Grafana not configured.</p>
+      </div>
+      <div class="grafana-slot" data-uid="qr-queue-depth" data-panel-id="2">
+        <strong>queue depth &amp; DLQ</strong>
+        <iframe class="grafana-frame" title="Queue depth and DLQ"
+                loading="lazy" sandbox="allow-scripts allow-same-origin allow-popups"></iframe>
+        <p class="hint grafana-fallback">Grafana not configured.</p>
       </div>
     </div>
   </section>

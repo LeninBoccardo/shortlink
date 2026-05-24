@@ -124,7 +124,7 @@ func (e *Emitter) Emit(ev Event) {
 		return
 	}
 	if ev.ID == "" {
-		ev.ID = newEventID()
+		ev.ID = NewEventID()
 	}
 	if ev.Timestamp.IsZero() {
 		ev.Timestamp = time.Now().UTC()
@@ -209,7 +209,10 @@ func (e *Emitter) send(ev Event) {
 	_ = resp.Body.Close()
 }
 
-func newEventID() string {
+// NewEventID returns a fresh ULID-based event ID with the canonical "evt_"
+// prefix. Exported so other packages (e.g. observer.Hub.Enqueue) can stamp
+// IDs in the same format as Emit produces.
+func NewEventID() string {
 	id, err := ulid.New(ulid.Timestamp(time.Now()), rand.Reader)
 	if err != nil {
 		return ""

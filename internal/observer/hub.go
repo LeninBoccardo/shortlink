@@ -63,7 +63,7 @@ func (h *Hub) Enqueue(ev events.Event) {
 		ev.Timestamp = time.Now().UTC()
 	}
 	if ev.ID == "" {
-		ev.ID = "evt_obs_" + time.Now().UTC().Format("20060102T150405.000000000")
+		ev.ID = events.NewEventID()
 	}
 	select {
 	case h.ch <- ev:

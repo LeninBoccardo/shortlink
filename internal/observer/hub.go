@@ -130,20 +130,23 @@ func (h *Hub) Routes() *http.ServeMux {
 
 func (h *Hub) handleIngest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		metrics.EventsRejectedTotal.WithLabelValues(metrics.EventRejectReasonMethod).Inc()
 		httpx.WriteError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	if !h.checkIngestAuth(r) {
-		metrics.EventsRejectedTotal.Inc()
+		metrics.EventsRejectedTotal.WithLabelValues(metrics.EventRejectReasonAuth).Inc()
 		httpx.WriteError(w, http.StatusUnauthorized, "missing or invalid ingest token")
 		return
 	}
 	var ev events.Event
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&ev); err != nil {
+		metrics.EventsRejectedTotal.WithLabelValues(metrics.EventRejectReasonBadJSON).Inc()
 		httpx.WriteError(w, http.StatusBadRequest, "malformed JSON event")
 		return
 	}
 	if ev.Kind == "" {
+		metrics.EventsRejectedTotal.WithLabelValues(metrics.EventRejectReasonMissingKind).Inc()
 		httpx.WriteError(w, http.StatusBadRequest, "event missing kind")
 		return
 	}

@@ -49,6 +49,11 @@ const (
 	SourceWorker   = "worker"
 	SourceObserver = "observer"
 	SourceLoadtest = "loadtest"
+
+	EventRejectReasonAuth        = "auth"
+	EventRejectReasonBadJSON     = "bad_json"
+	EventRejectReasonMissingKind = "missing_kind"
+	EventRejectReasonMethod      = "method"
 )
 
 var (
@@ -105,10 +110,10 @@ var (
 		Help: "Events accepted by the observer ingest endpoint.",
 	})
 
-	EventsRejectedTotal = promauto.NewCounter(prometheus.CounterOpts{
+	EventsRejectedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "shortlink_events_rejected_total",
-		Help: "Ingest requests rejected for missing/bad auth.",
-	})
+		Help: "Ingest requests rejected, by reason (auth, bad_json, missing_kind, method).",
+	}, []string{"reason"})
 
 	EventsDroppedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "shortlink_events_dropped_total",

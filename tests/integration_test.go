@@ -46,6 +46,8 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/leninboccardo/shortlink/migrations"
 )
 
 // Module-level state, populated by TestMain so subtests share one stack.
@@ -221,16 +223,14 @@ func applyMigrations(dsn string) error {
 		return err
 	}
 	defer db.Close()
-	goose.SetBaseFS(nil)
+	// Use the same embed.FS cmd/migrate ships with so the integration test
+	// exercises the actual migration source baked into the binary, not the
+	// on-disk tree.
+	goose.SetBaseFS(migrations.FS)
 	if err := goose.SetDialect("postgres"); err != nil {
 		return err
 	}
-	// Migrations live two levels up from tests/.
-	root, err := repoRoot()
-	if err != nil {
-		return err
-	}
-	return goose.Up(db, filepath.Join(root, "migrations"))
+	return goose.Up(db, ".")
 }
 
 // seedKeys inserts two API keys: one pro-tier with a high limit, one free-tier

@@ -108,7 +108,10 @@ func (w *worker) handleShortenJob(ctx context.Context, payload []byte) (err erro
 		},
 	})
 	metrics.JobsTotal.WithLabelValues(metrics.QueueShorten, metrics.JobStatusComplete).Inc()
-	w.enqueueWebhook(ctx, p.JobID)
+	if err := w.enqueueWebhook(ctx, p.JobID); err != nil {
+		w.log.Error("enqueue webhook job", "error", err, "job_id", p.JobID)
+		return err
+	}
 	return nil
 }
 
@@ -124,7 +127,11 @@ func (w *worker) handleUnclaimable(ctx context.Context, jobID string) error {
 		return fmt.Errorf("load %s: %w", jobID, err)
 	}
 	if row.Status == "done" {
-		w.enqueueWebhook(ctx, jobID) // idempotent — asynq dedups by job_id
+		// idempotent — asynq dedups by job_id key
+		if err := w.enqueueWebhook(ctx, jobID); err != nil {
+			w.log.Error("enqueue webhook job", "error", err, "job_id", jobID)
+			return err
+		}
 		return nil
 	}
 	w.log.Info("shorten job not claimable, skipping", "job_id", jobID, "status", row.Status)
@@ -249,16 +256,18 @@ func (w *worker) handleWebhookJob(ctx context.Context, payload []byte) (err erro
 }
 
 // enqueueWebhook submits the webhook-delivery job. The job_id key deduplicates
-// it, so a re-enqueue (e.g. from a redelivered shorten job) is harmless.
-func (w *worker) enqueueWebhook(ctx context.Context, jobID string) {
+// it, so a re-enqueue (e.g. from a redelivered shorten job) is harmless. The
+// error is returned so callers can propagate it: if asynq drops the shorten
+// task as complete here, the webhook is lost forever.
+func (w *worker) enqueueWebhook(ctx context.Context, jobID string) error {
 	wp, err := json.Marshal(queue.WebhookJobPayload{JobID: jobID, EnqueuedAt: time.Now().Unix()})
 	if err != nil {
-		w.log.Error("marshal webhook job", "error", err, "job_id", jobID)
-		return
+		return fmt.Errorf("marshal webhook job %s: %w", jobID, err)
 	}
 	if err := w.queue.Enqueue(ctx, queue.Job{Type: queue.TypeWebhook, Key: jobID, Payload: wp}); err != nil {
-		w.log.Error("enqueue webhook job", "error", err, "job_id", jobID)
+		return fmt.Errorf("enqueue webhook job %s: %w", jobID, err)
 	}
+	return nil
 }
 
 // shortenFailed records a failed attempt. On the final attempt it marks the row

@@ -193,7 +193,11 @@ func (w *worker) handleWebhookJob(ctx context.Context, payload []byte) (err erro
 	}
 	size, err := w.store.Stat(ctx, row.QrObject.String)
 	if err != nil {
-		w.log.Warn("stat qr object", "error", err, "job_id", p.JobID)
+		// Returning the error lets asynq retry; transient blips clear up,
+		// persistent failures end up in DLQ. The previous behaviour swallowed
+		// the error and delivered the webhook with size_bytes=0, which the
+		// customer had no way to distinguish from a legitimately empty object.
+		return fmt.Errorf("stat qr for %s: %w", p.JobID, err)
 	}
 
 	// Re-validate the webhook URL — DNS may have changed since enqueue. A

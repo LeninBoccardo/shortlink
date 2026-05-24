@@ -134,67 +134,67 @@ The API gateway and worker tier scale horizontally. The observer hub is delibera
 shortlink/
 ├── cmd/
 │   ├── api/                  # API gateway binary
-│   │   └── main.go
 │   ├── worker/               # Worker binary (shorten + webhook + sweeper)
-│   │   └── main.go
 │   ├── observer/             # Observer hub binary (aggregator + WS, backend only)
-│   │   └── main.go
 │   ├── loadtest/             # Load test runner + showcase page + webhook sink
+│   │   ├── attack.go         # vegeta per-key attackers
 │   │   ├── main.go
+│   │   ├── page.go           # showcase HTTP server + CSP/headers
+│   │   ├── sink.go           # in-process webhook sink at :8091
 │   │   └── web/              # Single-page showcase UI, embedded via go:embed
-│   │       ├── index.html
-│   │       ├── dashboard.js  # WebSocket client, DOM updates, TTL countdown
-│   │       └── style.css
+│   │       ├── app.css
+│   │       ├── app.js        # WebSocket client, DOM updates, TTL countdown
+│   │       └── index.html
 │   ├── keygen/               # API key + webhook-secret provisioning (make keys)
-│   │   └── main.go
-│   └── migrate/              # Goose migration runner (used by Job / one-shot service)
-│       └── main.go
+│   └── migrate/              # Goose migration runner (CLI wrapper around migrations.FS)
 │
 ├── internal/
 │   ├── auth/
 │   │   ├── keygen.go         # API key + webhook signing secret generation
-│   │   ├── validator.go      # Key lookup, tier resolution, throttled last_used_at
-│   │   └── ratelimit.go      # Sliding window rate limiter (Redis Lua)
-│   ├── shortener/
-│   │   ├── slug.go           # base62 slug generation (crypto/rand)
-│   │   └── shortener.go      # Slug assignment + collision retry loop
-│   ├── qrcode/
-│   │   ├── generator.go      # QR PNG generation (skip2/go-qrcode)
-│   │   └── uploader.go       # Upload to object storage, presign signed URL
-│   ├── queue/
-│   │   ├── queue.go          # Queue interface (Enqueue / handler registration)
-│   │   ├── inproc.go         # In-process channel implementation (M1)
-│   │   ├── asynq.go          # Redis/asynq implementation (M2+)
-│   │   └── jobs.go           # Job type definitions and payload structs
-│   ├── webhook/
-│   │   ├── dispatcher.go     # HTTP POST to client webhook URL
-│   │   ├── signer.go         # HMAC-SHA256 signing with per-key webhook secret
-│   │   └── retry.go          # Backoff schedule, max attempts
-│   ├── sweeper/
-│   │   └── sweeper.go        # Stale-record + orphaned-object cleanup loop
-│   ├── storage/
-│   │   ├── postgres.go       # pgx pool setup (sized; PgBouncer-aware exec mode)
-│   │   ├── queries.go        # sqlc-generated query wrappers
-│   │   └── minio.go          # MinIO client, upload, presign, delete
-│   ├── security/
-│   │   └── ssrf.go           # Webhook URL validation + safe-dial HTTP client
+│   │   ├── lastused.go       # SETNX-throttled api_keys.last_used_at writes
+│   │   ├── ratelimit.go      # Sliding-window rate limiter (Redis Lua)
+│   │   └── validator.go      # Key lookup, tier resolution
+│   ├── config/
+│   │   └── config.go         # Env-based config with defaults (see §14)
+│   ├── db/                   # sqlc-generated query layer + models (no hand-written code)
+│   ├── events/
+│   │   └── events.go         # Event envelope + best-effort emitter (single file in v1)
+│   ├── httpx/
+│   │   └── json.go           # WriteJSON / WriteError helpers
+│   ├── keysfile/
+│   │   └── keysfile.go       # cmd/loadtest config-file parsing (kept out of cmd/ for testability)
 │   ├── metrics/
 │   │   └── metrics.go        # Prometheus collectors, shared across binaries
-│   ├── events/
-│   │   ├── event.go          # Event envelope type (shared by emitter and observer)
-│   │   └── emitter.go        # Best-effort fire-and-forget event emission to observer
 │   ├── middleware/
 │   │   ├── auth.go           # API key extraction and injection into ctx
-│   │   ├── ratelimit.go      # Rate limit middleware, emits 429
-│   │   └── logger.go         # Structured request logging → observer
+│   │   ├── logger.go         # Structured request logging
+│   │   ├── ratelimit.go      # Rate-limit middleware, emits 429
+│   │   └── stat.go           # request_completed event for POST /shorten (see §10)
 │   ├── observer/
-│   │   ├── ingest.go         # POST /ingest handler
-│   │   ├── store.go          # In-memory event store with TTL (State/KeyStat/LogEntry)
-│   │   ├── aggregator.go     # Aggregation loop, prunes expired entries
+│   │   ├── broadcaster.go    # WebSocket hub: snapshot / stats / log_append
+│   │   ├── hub.go            # /ingest handler + 100ms aggregator (was ingest + aggregator)
 │   │   ├── poller.go         # Polls Redis for queue depth + pod heartbeats
-│   │   └── broadcaster.go    # WebSocket hub: snapshot / stats / log_append
-│   └── config/
-│       └── config.go         # Env-based config with defaults (see §14)
+│   │   └── state.go          # In-memory state with TTL (KeyStat / LogEntry / SystemStat)
+│   ├── qrcode/
+│   │   └── generator.go      # QR PNG generation (skip2/go-qrcode) + object-key naming
+│   ├── queue/
+│   │   ├── asynq.go          # Redis/asynq implementation (M2+)
+│   │   ├── inproc.go         # In-process channel implementation (M1, kept as Queue showcase)
+│   │   ├── jobs.go           # Job type + payload definitions
+│   │   └── queue.go          # Queue interface
+│   ├── security/
+│   │   └── ssrf.go           # Webhook URL validation + safe-dial HTTP client
+│   ├── shortener/
+│   │   └── slug.go           # base62 slug generation (crypto/rand). The collision retry loop lives in cmd/worker/handlers.go alongside the SQL finalize
+│   ├── storage/
+│   │   ├── minio.go          # MinIO client, upload, presign, stat, delete
+│   │   ├── postgres.go       # pgx pool setup (sized; PgBouncer-aware exec mode)
+│   │   └── redis.go          # Redis client wiring
+│   ├── sweeper/
+│   │   └── sweeper.go        # Stale-record + orphaned-object cleanup loop
+│   └── webhook/
+│       ├── dispatcher.go     # HTTP POST to client webhook URL
+│       └── signer.go         # HMAC-SHA256 signing (retry behaviour lives in asynq config)
 │
 ├── migrations/
 │   ├── 001_create_api_keys.sql
@@ -681,7 +681,7 @@ The load test runner has three jobs: run multi-key attacks against the API, **se
 --keys      path to keys.yaml config file       (default: config/keys.yaml)
 --target    base URL of API gateway             (default: http://localhost:8080)
 --duration  attack duration                     (default: 60s)
---observer  observer hub URL for live stats     (default: http://localhost:9000)
+--observer  observer hub URL for live stats     (default: http://localhost:9090)
 --grafana   Grafana base URL for embedded panels(default: http://localhost:3000)
 --port      showcase page port                  (default: 8090)
 --sink-url  webhook sink URL advertised to the API (default: http://localhost:8091/sink)
@@ -797,7 +797,7 @@ The row is created by the gateway in status `pending`, claimed by a worker as `p
 
 - **Length:** `SLUG_LENGTH` characters (default **7**), base62 (`a–z A–Z 0–9`). 62⁷ ≈ 3.5 trillion — at 100 M stored URLs the per-insert collision probability is ≈ 0.003%.
 - **Randomness:** `crypto/rand`, never `math/rand`.
-- **Generated-slug collision:** the finalize `UPDATE` may hit the `slug` `UNIQUE` constraint. On violation the worker generates a **fresh** random slug and retries, up to `SLUG_MAX_RETRIES` (default 5). Five consecutive collisions ⇒ keyspace saturation ⇒ emit `job_error` and bump `SLUG_LENGTH` by 1 for subsequent jobs.
+- **Generated-slug collision:** the finalize `UPDATE` may hit the `slug` `UNIQUE` constraint. On violation the worker generates a **fresh** random slug and retries, up to `SLUG_MAX_RETRIES` (default 5). Exhausting all retries surfaces as `job_error` and the job DLQs. Saturation of the 62⁷ keyspace is a v2 concern; widening `SLUG_LENGTH` at that point is an operator config change, not an automatic per-job runtime bump.
 - **Custom-slug collision:** never retried — the gateway already returned `409` at reservation time ([§4.1](#41-api-gateway)).
 
 ### Analytics (append-only)
@@ -880,7 +880,8 @@ type ShortenJobPayload struct {
     JobID       string `json:"job_id"`
     OriginalURL string `json:"original_url"`
     WebhookURL  string `json:"webhook_url"`
-    APIKeyID    string `json:"api_key_id"`
+    APIKeyHash  string `json:"api_key_hash"`           // SHA-256, the stats key
+    APIKeyHint  string `json:"api_key_hint,omitempty"` // display-only, last 6 chars
     CustomSlug  string `json:"custom_slug,omitempty"`
     EnqueuedAt  int64  `json:"enqueued_at"`
 }
@@ -890,6 +891,8 @@ type WebhookJobPayload struct {
     EnqueuedAt int64  `json:"enqueued_at"`
 }
 ```
+
+> The shorten payload carries the API key's hash + hint instead of an internal `api_key_id` so worker-emitted events line up with the same `KeyStat` row the api populated — keying observer stats on the raw `id` would have split per-key counters across two slightly different identifiers.
 
 ### Queues and configuration
 
@@ -1088,11 +1091,11 @@ One kind is **stat-only**: `request_completed` updates the per-key counters and 
 
 | Kind | Source | Level | Logged | Description |
 |------|--------|-------|--------|-------------|
-| `request_completed` | api | info | stat-only | Request finished; `meta` carries `duration_ms`, `status`, `tier`, `rate_limit` |
+| `request_completed` | api | info | stat-only | **`POST /shorten` only** (the Stat middleware is mounted on that route alone). `meta` carries `duration_ms`, `status`, `tier`, `rate_limit`. Redirects + `/metrics` + `/healthz` are deliberately excluded — counting redirects would dwarf the showcase signal |
 | `auth_failure` | api | warn | yes | Invalid or missing key |
 | `rate_limit_hit` | api | warn | yes | Request rejected, 429 returned; `meta` carries `tier`, `rate_limit` |
 | `job_enqueued` | api | info | yes | Shorten job accepted into queue |
-| `job_complete` | worker | info | yes | Shorten job done, webhook job enqueued; `meta` carries QR timing |
+| `job_complete` | worker | info | yes | Shorten job done, webhook job enqueued; `meta` carries `duration_ms` (total shorten-handler runtime: claim → QR → upload → finalize) and `slug`. QR-only timing is in the `shortlink_qr_generate_duration_seconds` histogram |
 | `job_error` | worker | error | yes | Shorten job failed, will retry |
 | `job_dlq` | worker | error | yes | Shorten job permanently failed (archived) |
 | `webhook_sent` | worker | info | yes | Webhook delivered successfully |
@@ -1230,7 +1233,7 @@ spec:
       app: shortlink-worker
   template:
     spec:
-      terminationGracePeriodSeconds: 40   # > job drain timeout (30s)
+      terminationGracePeriodSeconds: 60   # DRAIN_TIMEOUT (30s) + sweeper exit + webhook HTTP tail
       containers:
         - name: worker
           image: shortlink-worker:latest
@@ -1248,11 +1251,9 @@ spec:
             httpGet: { path: /healthz, port: 8081 }
             initialDelaySeconds: 5
             periodSeconds: 10
-          lifecycle:
-            preStop:
-              exec:
-                command: ["/bin/sh", "-c", "sleep 5"]  # wait for LB drain
 ```
+
+> **No `preStop` hook on the worker.** The image is `gcr.io/distroless/static-debian12:nonroot` which has no `/bin/sh`, so a sleep-based hook is not runnable. It is also unnecessary: the worker has no Service in front of it, so there is no LB endpoint slice to drain. SIGTERM goes straight to the binary, asynq stops accepting new tasks, in-flight handlers run to `DRAIN_TIMEOUT`, then the process exits.
 
 ### Worker autoscaling — KEDA
 
@@ -1274,7 +1275,7 @@ spec:
       metadata:
         address: redis:6379
         listName: "asynq:{shorten}:pending"
-        listLength: "10"     # scale up when > 10 pending jobs per pod
+        listLength: "30"     # scale up when > 30 pending jobs per pod
 ```
 
 ### PgBouncer
@@ -1291,52 +1292,59 @@ KEDA, PgBouncer, the migration Job, the egress `NetworkPolicy`, and the autoscal
 
 ### docker-compose.yml services
 
+docker-compose hosts only the **infrastructure dependencies**. The shortlink binaries themselves (api, worker, observer, loadtest) run **on the developer host** via `make run-api` / `make run-worker` / `make run-observer` / `make loadtest`, kept out of compose so iteration is just `go build` + restart (no `docker compose build` cycle).
+
 | Service | Image | Port(s) | Notes |
 |---------|-------|---------|-------|
-| `api` | `shortlink-api` | `8080` | Single instance locally (k8s runs 2 replicas — §12) |
-| `worker` | `shortlink-worker` | `8081` (not published) | 3 replicas; shorten + webhook + sweeper |
-| `observer` | `shortlink-observer` | `9000` | Backend only (ingest + WebSocket) |
-| `migrate` | `shortlink-migrate` | — | One-shot; `depends_on: postgres` (healthy) |
 | `postgres` | `postgres:16-alpine` | `55432` → `5432` | Host port `55432` avoids colliding with a native Postgres install |
-| `pgbouncer` | `edoburu/pgbouncer` | `6432` | Transaction-pooling in front of Postgres |
+| `pgbouncer` | `edoburu/pgbouncer` | `16432` → `6432` | Transaction-pooling in front of Postgres |
 | `redis` | `redis:7-alpine` | `6379` | No persistence needed locally |
 | `minio` | `minio/minio` | `9000` API / `9001` console | S3-compatible object storage |
-| `prometheus` | `prom/prometheus` | `9091` → `9090` | Scrapes `/metrics` from all services |
+| `migrate` | `shortlink-migrate` | — | One-shot, behind `profiles: ["migrate"]`; run via `make migrate` |
+| `prometheus` | `prom/prometheus` | `9091` → `9090` | Scrapes `/metrics` from host-run binaries |
 | `grafana` | `grafana/grafana` | `3000` | Provisioned dashboards + datasource |
 
 Notes:
-- `api` runs a **single instance** locally — a published host port (`8080`) cannot be shared by multiple replicas. Kubernetes runs 2 replicas behind a Service.
-- `worker`'s port `8081` is **not published to the host**; Prometheus scrapes it over the internal compose network.
-- `api` and `worker` declare `depends_on: { migrate: { condition: service_completed_successfully } }` so they start only after migrations finish.
-- The host-port overlap between MinIO API and the observer (both internal `9000`) is resolved by mapping MinIO to a different host port; inside the compose network services use service names.
 - Postgres is published on host port **`55432`** (not `5432`) so the stack coexists with a native Postgres install on the developer's machine; inside the compose network it still listens on `5432`. The container uses an explicit `POSTGRES_PASSWORD` — `POSTGRES_HOST_AUTH_METHOD=trust` is unreliable because initdb's default scram rules for `127.0.0.1`/`::1` shadow it.
-- The **load test runner is not a compose service** — it runs on the host on demand via `make loadtest` (a one-shot, lasting the attack duration). Its webhook sink listens on the host at `:8091`; the compose `worker` reaches it through `host.docker.internal`, so `SSRF_ALLOWLIST` for `api` and `worker` is set to `host.docker.internal` (resolves natively on Docker Desktop; on Linux add `extra_hosts: ["host.docker.internal:host-gateway"]`).
+- The shortlink binaries reach Postgres via PgBouncer on `localhost:16432`; PgBouncer in turn talks to Postgres on the internal compose network.
+- The **load test runner runs on the host** via `make loadtest` (one-shot, lasting the attack duration). Its webhook sink listens on the host at `:8091`; the host-run api/worker reach it via `127.0.0.1`/`localhost`, so `SSRF_ALLOWLIST` must include those hosts (`SSRF_ALLOWLIST=127.0.0.1,localhost,host.docker.internal`).
 - The compose file is **built up across milestones** — Postgres + MinIO from M1, Redis from M2, Prometheus + Grafana from M7, PgBouncer at M8 ([§17](#17-implementation-milestones)).
 - **Prometheus host port is `9091`** (not the canonical `9090`) because the observer already owns host `9090` during local dev. Grafana still reaches Prometheus on the internal compose name `http://prometheus:9090`.
-- **Scrape model differs by environment.** Locally `api`/`worker`/`observer` run on the host (`make run-*`), so the Prometheus container reaches them via `host.docker.internal:8080/8081/9090` (compose declares `host.docker.internal:host-gateway` as an `extra_host` so Linux works too). In Kubernetes (M8) they become pod targets discovered by labels — the dashboards and metric names do not change.
+- **Scrape model.** Locally the api/worker/observer binaries run on the host, so the Prometheus container reaches them via `host.docker.internal:8080/8081/9090` (compose declares `host.docker.internal:host-gateway` as an `extra_host` so Linux works too). In Kubernetes (M8) they become pod targets discovered by labels — the dashboards and metric names do not change.
 
 ### Makefile targets
 
 ```makefile
-make dev          # docker-compose up --build
-make migrate      # run goose migrations (one-shot)
+make stack-up     # docker compose up -d (infra only — see §13)
+make migrate      # run the goose migration container against the local Postgres
+make run-api      # build + run cmd/api against the local stack
+make run-worker   # build + run cmd/worker against the local stack
+make run-observer # build + run cmd/observer
 make keys         # run cmd/keygen: generate 3 test API keys (free, pro,
                   # abuser) + webhook secrets, insert hashes, write keys.yaml
-make loadtest     # go run ./cmd/loadtest with defaults
-make build        # build all binaries
+make loadtest     # go run ./cmd/loadtest with defaults (also serves :8090)
+make build        # build every binary into ./bin
 make test         # go test ./...
-make lint         # golangci-lint run
+make test-integration  # go test -tags integration ./tests/... (needs Docker)
+make images       # docker build the api/worker/observer/migrate images
+make k8s-up       # kind-up + image build + kind load + helm upgrade --install
 ```
+
+> No `make lint` target ships today — golangci-lint is run ad-hoc and via the CI workflow; adding a Makefile alias is a v2 nicety.
 
 ### First-run sequence
 
 ```bash
 git clone https://github.com/leninboccardo/shortlink
 cd shortlink
-make dev          # starts all services (migrations run as the one-shot service)
-make keys         # generates test keys + webhook secrets
+make stack-up     # bring up infra (Postgres, PgBouncer, Redis, MinIO, Prometheus, Grafana)
+make migrate      # apply DB migrations against the local Postgres
+make keys         # generates test API keys + webhook secrets
+make run-api &    # background the api  (alternatively: separate terminals)
+make run-worker & # background the worker
+make run-observer &
 make loadtest     # starts the attack + serves the showcase page at :8090
-                  # Grafana available at :3000, Prometheus at :9090
+                  # Grafana available at :3000, Prometheus at :9091
 ```
 
 > `config/keys.yaml` contains real key material and **must be gitignored**. `make keys` regenerates it locally; it is never committed.
@@ -1369,7 +1377,7 @@ All binaries are configured through environment variables, parsed by `internal/c
 | `QR_OBJECT_TTL` | `15m` | worker | Age at which the sweeper deletes a QR object ([§6](#6-storage-design)) |
 | `QR_SIZE` | `256` | worker | QR PNG side length in px |
 | `SLUG_LENGTH` | `7` | worker | Generated slug length (base62) |
-| `SLUG_MAX_RETRIES` | `5` | worker | Collision retries before the length is bumped |
+| `SLUG_MAX_RETRIES` | `5` | worker | Collision retries before the shorten job fails ([§5](#slug-generation--collision-policy)) |
 | `WORKER_CONCURRENCY` | `3` | worker | Shorten-handler goroutines per pod |
 | `CLAIM_LEASE` | `2m` | worker | asynq task timeout for the shorten job; also the freshness window for the `updated_at` lease token that guards finalize/fail. The claim itself is unconditional and does **not** key off this value ([§4.2](#42-worker-pod)) |
 | `SWEEP_STALE_AGE` | `30m` | worker | Age at which the sweeper deletes abandoned `pending`/`processing` rows |

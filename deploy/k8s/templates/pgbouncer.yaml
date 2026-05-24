@@ -1,0 +1,93 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "shortlink.componentName" (dict "root" . "component" "pgbouncer") }}
+  labels:
+    {{- include "shortlink.componentLabels" (dict "root" . "component" "pgbouncer") | nindent 4 }}
+spec:
+  # Single-replica is fine: PgBouncer is stateless and a second instance
+  # would just double the upstream connections to Postgres. Scale via
+  # DEFAULT_POOL_SIZE, not replicas.
+  replicas: {{ .Values.pgbouncer.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: pgbouncer
+  template:
+    metadata:
+      labels:
+        {{- include "shortlink.componentLabels" (dict "root" . "component" "pgbouncer") | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: pgbouncer
+          image: "{{ .Values.pgbouncer.image.repository }}:{{ .Values.pgbouncer.image.tag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: pgbouncer
+              containerPort: 6432
+              protocol: TCP
+          env:
+            - name: DB_HOST
+              value: {{ .Values.postgres.host | quote }}
+            - name: DB_PORT
+              value: {{ .Values.postgres.port | quote }}
+            - name: DB_USER
+              value: {{ .Values.postgres.user | quote }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "shortlink.componentName" (dict "root" . "component" "secrets") }}
+                  key: PGBOUNCER_DB_PASSWORD
+            - name: DB_NAME
+              value: {{ .Values.postgres.database | quote }}
+            - name: LISTEN_PORT
+              value: "6432"
+            - name: POOL_MODE
+              value: transaction
+            - name: AUTH_TYPE
+              value: scram-sha-256
+            - name: MAX_CLIENT_CONN
+              value: "200"
+            - name: DEFAULT_POOL_SIZE
+              value: "20"
+            - name: MIN_POOL_SIZE
+              value: "4"
+            - name: RESERVE_POOL_SIZE
+              value: "4"
+            # Required for transaction-mode pooling: prepared statements
+            # would otherwise leak between transactions. pgx defaults to
+            # QueryExecModeExec.
+            - name: IGNORE_STARTUP_PARAMETERS
+              value: extra_float_digits
+          livenessProbe:
+            tcpSocket:
+              port: pgbouncer
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: pgbouncer
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.pgbouncer.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "shortlink.componentName" (dict "root" . "component" "pgbouncer") }}
+  labels:
+    {{- include "shortlink.componentLabels" (dict "root" . "component" "pgbouncer") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: pgbouncer
+  ports:
+    - name: pgbouncer
+      port: 6432
+      targetPort: pgbouncer
+      protocol: TCP

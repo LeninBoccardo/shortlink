@@ -18,6 +18,7 @@
     btnReset: document.getElementById("btn-reset"),
     btnClear: document.getElementById("btn-clear"),
     keyTbody: document.getElementById("key-tbody"),
+    logList: document.getElementById("log-list"),
   };
 
   // ---------- connection indicator -----------------------------------------
@@ -139,13 +140,13 @@
 
   function onSnapshot(frame) {
     renderKeyTable(frame.key_stats || []);
+    resetLogs(frame.logs || []);
   }
   function onStats(frame) {
     renderKeyTable(frame.key_stats || []);
   }
   function onLogAppend(frame) {
-    // eslint-disable-next-line no-console
-    console.log("log_append:", (frame.logs || []).length, "new logs");
+    appendLogs(frame.logs || []);
   }
   function onReset(frame) {
     // eslint-disable-next-line no-console
@@ -245,6 +246,128 @@
     if (!ms) return "—";
     return ms + " ms";
   }
+
+  // ---------- log audit panel ---------------------------------------------
+  //
+  // SPEC §4.3 / §11:
+  //   - newest-first ring buffer, max 500 entries on the browser side.
+  //   - per-entry TTL badge ticking down (badge derived from expires_at,
+  //     re-rendered every 1s by a single setInterval).
+  //   - on snapshot: reset to the server-shipped logs (already newest-first).
+  //   - on log_append: prepend new entries (server ships them newest-first
+  //     too — the ones since this client's cursor).
+  //   - browser-side prune drops entries past expires_at so even a stuck WS
+  //     decays the on-screen list naturally.
+
+  var LOG_RING_MAX = 500;
+  var logs = [];                  // newest-first, max LOG_RING_MAX
+  var logLiByID = Object.create(null);
+
+  function resetLogs(initial) {
+    logs = [];
+    logLiByID = Object.create(null);
+    if (els.logList) els.logList.innerHTML = "";
+    appendLogs(initial);
+  }
+
+  function appendLogs(fresh) {
+    if (!els.logList || !fresh || !fresh.length) {
+      tickLogTTLs(); // still re-render the existing badges
+      return;
+    }
+    // Drop the empty placeholder on first real append.
+    if (els.logList.firstElementChild && els.logList.firstElementChild.classList.contains("empty")) {
+      els.logList.innerHTML = "";
+    }
+    var now = Date.now();
+    // Iterate the incoming batch oldest-first so prepending one at a time
+    // ends with the newest at the top.
+    for (var i = fresh.length - 1; i >= 0; i--) {
+      var entry = fresh[i];
+      if (!entry || !entry.id || logLiByID[entry.id]) continue; // dedup on reconnect snapshot overlap
+      var li = buildLogRow(entry, now);
+      logLiByID[entry.id] = li;
+      logs.unshift(entry);
+      els.logList.insertBefore(li, els.logList.firstChild);
+    }
+    // Cap the ring.
+    while (logs.length > LOG_RING_MAX) {
+      var evicted = logs.pop();
+      var oldLi = logLiByID[evicted.id];
+      if (oldLi && oldLi.parentNode) oldLi.parentNode.removeChild(oldLi);
+      delete logLiByID[evicted.id];
+    }
+    tickLogTTLs();
+  }
+
+  function buildLogRow(entry, now) {
+    var li = document.createElement("li");
+    li.dataset.id = entry.id;
+    li.dataset.expires = entry.expires_at || "";
+    li.dataset.source = entry.source || "";
+    li.dataset.level = entry.level || "info";
+    li.dataset.hint = entry.api_key_hint || "";
+
+    var ts = entry.ts ? new Date(entry.ts) : new Date(now);
+    li.appendChild(span("log-ts", ts.toLocaleTimeString()));
+    li.appendChild(span("log-src", entry.source || "?"));
+    li.appendChild(span("log-lvl log-lvl-" + (entry.level || "info"), (entry.level || "info")));
+    li.appendChild(span("log-kind", entry.kind || ""));
+    li.appendChild(span("log-hint", entry.api_key_hint ? "…" + entry.api_key_hint : ""));
+    li.appendChild(span("log-msg", entry.message || ""));
+    var ttl = span("log-ttl", computeTTLBadge(entry, now));
+    li.appendChild(ttl);
+    return li;
+  }
+
+  function span(cls, text) {
+    var el = document.createElement("span");
+    el.className = cls;
+    el.textContent = text;
+    return el;
+  }
+
+  function computeTTLBadge(entry, now) {
+    if (!entry || !entry.expires_at) return "";
+    var exp = Date.parse(entry.expires_at);
+    if (isNaN(exp)) return "";
+    var s = Math.round((exp - now) / 1000);
+    if (s <= 0) return "expired";
+    if (s < 60) return s + "s";
+    if (s < 3600) return Math.round(s / 60) + "m";
+    return Math.round(s / 3600) + "h";
+  }
+
+  // tickLogTTLs walks the currently-rendered list and refreshes each badge.
+  // Also drops entries past their expires_at — server pruned them out of the
+  // ring already, but the browser keeps its own copy and needs to mirror.
+  function tickLogTTLs() {
+    if (!els.logList) return;
+    var now = Date.now();
+    for (var i = logs.length - 1; i >= 0; i--) {
+      var entry = logs[i];
+      if (!entry.expires_at) continue;
+      var exp = Date.parse(entry.expires_at);
+      if (!isNaN(exp) && exp <= now) {
+        var li = logLiByID[entry.id];
+        if (li && li.parentNode) li.parentNode.removeChild(li);
+        delete logLiByID[entry.id];
+        logs.splice(i, 1);
+        continue;
+      }
+      var li2 = logLiByID[entry.id];
+      if (!li2) continue;
+      var badge = li2.lastChild;
+      if (!badge) continue;
+      var text = computeTTLBadge(entry, now);
+      if (badge.textContent !== text) badge.textContent = text;
+      // Warn colour when <30s.
+      var s = (exp - now) / 1000;
+      badge.classList.toggle("expiring", s < 30);
+    }
+  }
+
+  setInterval(tickLogTTLs, 1000);
 
   // ---------- kick off ----------------------------------------------------
 

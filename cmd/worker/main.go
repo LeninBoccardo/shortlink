@@ -185,7 +185,9 @@ func run() error {
 	// 3. Stop the health server.
 	healthCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = health.Shutdown(healthCtx)
+	if err := health.Shutdown(healthCtx); err != nil {
+		log.Error("health server shutdown", "error", err)
+	}
 	// 4. Emit pod_stopped, stop the heartbeat refresher (deletes the key),
 	//    and flush the emitter.
 	emitter.Emit(events.Event{

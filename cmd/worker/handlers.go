@@ -54,9 +54,17 @@ func (w *worker) handleShortenJob(ctx context.Context, payload []byte) (err erro
 
 	slug := p.CustomSlug
 	generated := slug == ""
+	// qrKey lives outside the loop on purpose: ObjectKey is deterministic from
+	// jobID (the date partition is the day the job is processed), so a retry
+	// after a slug collision uploads to the same key and the last successful
+	// PNG overwrites any earlier one. Same key is also what FinalizeShortURL
+	// will set on the row.
 	qrKey := qrcode.ObjectKey(p.JobID, time.Now())
 
 	// Generate the QR and finalize, regenerating the slug on a unique collision.
+	// The QR-generate timing is only observed once the loop succeeds so collide
+	// retries don't pollute the histogram with same-job re-encodes.
+	var qrDuration time.Duration
 	for attempt := 0; ; attempt++ {
 		if generated {
 			s, err := shortener.Generate(w.cfg.SlugLength)
@@ -67,7 +75,7 @@ func (w *worker) handleShortenJob(ctx context.Context, payload []byte) (err erro
 		}
 		qrStart := time.Now()
 		png, err := qrcode.Generate(w.cfg.ShortURLBase+"/"+slug, w.cfg.QRSize)
-		metrics.QRGenerateDurationSeconds.Observe(time.Since(qrStart).Seconds())
+		qrDuration = time.Since(qrStart)
 		if err != nil {
 			return w.shortenFailed(ctx, p, lease, fmt.Errorf("generate qr: %w", err))
 		}
@@ -93,6 +101,7 @@ func (w *worker) handleShortenJob(ctx context.Context, payload []byte) (err erro
 		}
 		break
 	}
+	metrics.QRGenerateDurationSeconds.Observe(qrDuration.Seconds())
 
 	w.log.Info("shorten job complete", "job_id", p.JobID, "slug", slug)
 	w.emitter.Emit(events.Event{

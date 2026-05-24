@@ -1,7 +1,14 @@
 # ShortLink — developer tasks (SPEC §13). Targets grow as milestones land.
 COMPOSE := docker compose -f deploy/docker-compose.yml
 
-.PHONY: dev dev-down stack-up stack-logs migrate keys run-api run-worker run-observer loadtest build test sqlc tidy
+# k8s targets (M8). KIND_CLUSTER stays overridable from the env.
+KIND_CLUSTER ?= shortlink
+HELM_RELEASE ?= shortlink
+HELM_NAMESPACE ?= default
+IMAGE_TAG ?= dev
+
+.PHONY: dev dev-down stack-up stack-logs migrate keys run-api run-worker run-observer loadtest build test sqlc tidy \
+        images kind-up kind-load k8s-up k8s-down k8s-logs k8s-status
 
 dev: ## start local infrastructure (Postgres + MinIO + Redis + Prometheus + Grafana)
 	$(COMPOSE) up -d
@@ -44,3 +51,36 @@ sqlc: ## regenerate type-safe query code from internal/db/query
 
 tidy: ## tidy and verify go module dependencies
 	go mod tidy
+
+# ---------------------------------------------------------------------------
+# Kubernetes (M8). Assumes kind, kubectl, helm are on PATH. See
+# deploy/k8s/README.md for the one-time cluster setup (Calico + KEDA).
+
+images: ## build api/worker/observer/migrate docker images locally
+	docker build --build-arg BINARY=api      -t shortlink-api:$(IMAGE_TAG)      .
+	docker build --build-arg BINARY=worker   -t shortlink-worker:$(IMAGE_TAG)   .
+	docker build --build-arg BINARY=observer -t shortlink-observer:$(IMAGE_TAG) .
+	docker build --build-arg BINARY=migrate  -t shortlink-migrate:$(IMAGE_TAG)  .
+
+kind-up: ## create the local kind cluster (idempotent)
+	kind get clusters | grep -q "^$(KIND_CLUSTER)$$" || kind create cluster --name $(KIND_CLUSTER)
+
+kind-load: images ## push the locally built images into the kind node
+	kind load docker-image --name $(KIND_CLUSTER) \
+	  shortlink-api:$(IMAGE_TAG) shortlink-worker:$(IMAGE_TAG) \
+	  shortlink-observer:$(IMAGE_TAG) shortlink-migrate:$(IMAGE_TAG)
+
+k8s-up: kind-up kind-load ## install/upgrade the Helm release into the kind cluster
+	helm upgrade --install $(HELM_RELEASE) deploy/k8s \
+	  --namespace $(HELM_NAMESPACE) --create-namespace \
+	  --set image.tag=$(IMAGE_TAG) --wait --timeout 3m
+
+k8s-down: ## uninstall the Helm release (keeps the cluster)
+	helm uninstall $(HELM_RELEASE) --namespace $(HELM_NAMESPACE)
+
+k8s-logs: ## tail logs from api + worker + observer pods
+	kubectl -n $(HELM_NAMESPACE) logs -l app.kubernetes.io/instance=$(HELM_RELEASE) --all-containers --tail=50 -f
+
+k8s-status: ## summarise rollout state across the chart's workloads
+	kubectl -n $(HELM_NAMESPACE) get deploy,pod,svc,job,scaledobject,networkpolicy \
+	  -l app.kubernetes.io/instance=$(HELM_RELEASE)

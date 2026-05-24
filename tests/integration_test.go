@@ -421,14 +421,24 @@ func newWebhookSink() *webhookSink {
 
 func (s *webhookSink) Close() { s.server.Close() }
 
-// expect registers a job_id and returns a channel that fires when the
-// delivery arrives. Test must drain or time out.
-func (s *webhookSink) expect(jobID string) chan webhookDelivery {
+// channelLocked returns the buffered channel for jobID, creating it on demand.
+// Caller must hold s.mu. Auto-creation closes the race where the worker
+// delivers a webhook before the test gets a chance to register interest in it.
+func (s *webhookSink) channelLocked(jobID string) chan webhookDelivery {
+	if ch, ok := s.channels[jobID]; ok {
+		return ch
+	}
 	ch := make(chan webhookDelivery, 4)
-	s.mu.Lock()
 	s.channels[jobID] = ch
-	s.mu.Unlock()
 	return ch
+}
+
+// expect returns the channel that will receive future (and any already-buffered)
+// deliveries for jobID. Safe to call before or after the delivery arrives.
+func (s *webhookSink) expect(jobID string) chan webhookDelivery {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.channelLocked(jobID)
 }
 
 func (s *webhookSink) handle(w http.ResponseWriter, r *http.Request) {
@@ -442,21 +452,19 @@ func (s *webhookSink) handle(w http.ResponseWriter, r *http.Request) {
 		// Subsequent attempts succeed.
 		delete(s.firstAttemptStatus, jobID)
 	}
-	ch, hasCh := s.channels[jobID]
+	ch := s.channelLocked(jobID)
 	s.mu.Unlock()
 
 	w.WriteHeader(status)
-	if hasCh {
-		select {
-		case ch <- webhookDelivery{
-			Body:      body,
-			Signature: r.Header.Get("X-ShortLink-Signature"),
-			KeyHint:   r.Header.Get("X-ShortLink-Key-Hint"),
-			JobID:     jobID,
-			Status:    status,
-		}:
-		default:
-		}
+	select {
+	case ch <- webhookDelivery{
+		Body:      body,
+		Signature: r.Header.Get("X-ShortLink-Signature"),
+		KeyHint:   r.Header.Get("X-ShortLink-Key-Hint"),
+		JobID:     jobID,
+		Status:    status,
+	}:
+	default:
 	}
 }
 
@@ -601,8 +609,6 @@ func postShorten(t *testing.T, apiKey, target, webhookURL string) shortenRespons
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	// Pre-register on the sink BEFORE the worker delivers.
-	sinkServer.expect(out.JobID)
 	return shortenResponse{StatusCode: resp.StatusCode, JobID: out.JobID}
 }
 
@@ -624,12 +630,7 @@ func postShortenRaw(t *testing.T, apiKey, target, webhookURL string) *http.Respo
 
 func waitForDelivery(t *testing.T, jobID string, timeout time.Duration) webhookDelivery {
 	t.Helper()
-	sinkServer.mu.Lock()
-	ch, ok := sinkServer.channels[jobID]
-	sinkServer.mu.Unlock()
-	if !ok {
-		t.Fatalf("job_id %s not registered with sink", jobID)
-	}
+	ch := sinkServer.expect(jobID)
 	select {
 	case d := <-ch:
 		return d

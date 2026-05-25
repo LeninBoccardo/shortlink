@@ -144,8 +144,16 @@ func (v *Validator) SafeClient(timeout time.Duration) *http.Client {
 			}
 			return nil, lastErr
 		},
-		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: timeout,
+		TLSHandshakeTimeout: 5 * time.Second,
+		// Default per-host cap is 2 — under sustained webhook fan-out to one
+		// sink that meant ~98% of attempts opened a fresh TCP+TLS conn.
+		// 16 lets keep-alive actually kick in.
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 16,
+		IdleConnTimeout:     90 * time.Second,
+		// Cap header-arrival at half the overall timeout so body-read has
+		// headroom (previously equal to Client.Timeout, leaving 0 for body).
+		ResponseHeaderTimeout: timeout / 2,
 	}
 	return &http.Client{
 		Timeout:   timeout,

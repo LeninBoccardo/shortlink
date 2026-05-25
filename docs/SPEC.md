@@ -677,13 +677,16 @@ The load test runner has three jobs: run multi-key attacks against the API, **se
 #### CLI flags
 
 ```text
---keys      path to keys.yaml config file       (default: config/keys.yaml)
---target    base URL of API gateway             (default: http://localhost:8080)
---duration  attack duration                     (default: 60s)
---observer  observer hub URL for live stats     (default: http://localhost:9090)
---grafana   Grafana base URL for embedded panels(default: http://localhost:3000)
---port      showcase page port                  (default: 8090)
---sink-url  webhook sink URL advertised to the API (default: http://localhost:8091/sink)
+--keys        path to keys.yaml config file              (default: config/keys.yaml)
+--limits      path to local-limits.yaml (scaling panel)  (default: config/local-limits.yaml)
+--target      base URL of API gateway                    (default: http://localhost:8080)
+--duration    attack duration                            (default: 60s)
+--observer    observer hub URL for live stats            (default: http://localhost:9090)
+--grafana     Grafana base URL for embedded panels       (default: http://localhost:3000)
+--prometheus  Prometheus base URL (test-console probes)  (default: http://localhost:9091)
+--port        showcase page port                         (default: 8090)
+--sink-url    webhook sink URL advertised to the API     (default: http://localhost:8091/sink)
+--sink-port   port the sink listens on                   (default: 8091)
 ```
 
 `--sink-url` is the address the **API/worker** must use to reach the sink. The load test runner always runs on the host ([§13](#13-local-development)); the value differs by where the API runs: `http://localhost:8091/sink` when the API is also on the host, `http://host.docker.internal:8091/sink` when the API runs in docker-compose. Whatever host it names must be present in `SSRF_ALLOWLIST` ([§9](#9-security)).

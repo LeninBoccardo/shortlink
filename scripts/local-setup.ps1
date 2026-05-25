@@ -283,6 +283,13 @@ function Start-Container($name, $port) {
     $cpu = (& (Join-Path $RepoRoot "bin\limits.exe") get $name cpu).Trim()
     $mem = (& (Join-Path $RepoRoot "bin\limits.exe") get $name memory_mb).Trim()
 
+    # Compose names its default network "${project}_default" where ${project}
+    # is $COMPOSE_PROJECT_NAME if set, else the `name:` field in compose.yml
+    # (which is "shortlink"). Honoring the env var lets a user run compose
+    # with `-p` and still have container-mode attach the right network.
+    $projectName = if ($env:COMPOSE_PROJECT_NAME) { $env:COMPOSE_PROJECT_NAME } else { "shortlink" }
+    $networkName = "${projectName}_default"
+
     $containerName = "shortlink-$name"
     # Idempotent re-runs: remove any stale container with this name first.
     docker rm -f $containerName 2>&1 | Out-Null
@@ -306,7 +313,7 @@ function Start-Container($name, $port) {
     # --memory-swap=--memory disables swap (defaults to 2x memory otherwise),
     # so the cap actually caps. Otherwise the scaling panel teaches the wrong
     # lesson: "capped at 512M" but RSS+swap can reach 1024M.
-    docker run -d --name $containerName --network shortlink_default `
+    docker run -d --name $containerName --network $networkName `
         --memory "${mem}M" --memory-swap "${mem}M" --cpus $cpu `
         --add-host "host.docker.internal:host-gateway" `
         -p "${port}:${port}" `

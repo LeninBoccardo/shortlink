@@ -257,10 +257,16 @@ build_shortlink_images() {
 
 start_container() {
     local name=$1 port=$2
-    local cpu mem container_name
+    local cpu mem container_name network_name project_name
     cpu=$("$REPO_ROOT/bin/limits" get "$name" cpu)
     mem=$("$REPO_ROOT/bin/limits" get "$name" memory_mb)
     container_name="shortlink-${name}"
+    # Compose names its default network "${project}_default" where ${project}
+    # is $COMPOSE_PROJECT_NAME if set, else the `name:` field in compose.yml
+    # (which is "shortlink"). Honoring the env var lets a user run compose
+    # with `-p` and still have container-mode attach the right network.
+    project_name="${COMPOSE_PROJECT_NAME:-shortlink}"
+    network_name="${project_name}_default"
     # Idempotent re-runs: remove any stale container with this name first.
     docker rm -f "$container_name" >/dev/null 2>&1 || true
     # SSRF_ALLOWLIST must include host.docker.internal so worker can deliver
@@ -273,7 +279,7 @@ start_container() {
     # --memory-swap=--memory disables swap (defaults to 2x memory otherwise),
     # so the cap actually caps. Otherwise the scaling panel teaches the wrong
     # lesson: "capped at 512M" but RSS+swap can reach 1024M.
-    docker run -d --name "$container_name" --network shortlink_default \
+    docker run -d --name "$container_name" --network "$network_name" \
         --memory "${mem}M" --memory-swap "${mem}M" --cpus "$cpu" \
         --add-host "host.docker.internal:host-gateway" \
         -p "${port}:${port}" \

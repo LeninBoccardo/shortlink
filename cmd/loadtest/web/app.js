@@ -767,7 +767,9 @@
   // startup. Refreshed every 5 s.
 
   var scalingGrid = document.getElementById("scaling-grid");
+  var scalingEnvBadge = document.getElementById("scaling-env-badge");
   var scalingCatalog = null;
+  var scalingIsDockerDesktop = false;
   var SCALING_REFRESH_MS = 5000;
 
   function loadScalingCatalog() {
@@ -776,6 +778,8 @@
       .then(function (r) { return r.ok ? r.json() : Promise.reject("HTTP " + r.status); })
       .then(function (data) {
         scalingCatalog = (data && data.services) || [];
+        scalingIsDockerDesktop = !!(data && data.env && data.env.docker_desktop);
+        renderScalingEnvBadge();
         if (scalingCatalog.length === 0) {
           scalingGrid.innerHTML = '<div class="empty">No services configured.</div>';
           return;
@@ -789,6 +793,22 @@
       });
   }
 
+  function renderScalingEnvBadge() {
+    if (!scalingEnvBadge) return;
+    if (!scalingIsDockerDesktop) { scalingEnvBadge.hidden = true; return; }
+    scalingEnvBadge.hidden = false;
+    scalingEnvBadge.textContent = "Docker Desktop";
+    // Tooltip: on Docker Desktop, `docker stats` reports CPU% as % of all
+    // host vCPUs in the Linux VM, so a container with --cpus 0.5 saturating
+    // its cap can show e.g. 50% (= 0.5 cores). But unrelated VM activity can
+    // also push the reading above 100% × alloc_cpu briefly; the bar caps
+    // visually at 100% while the number stays truthful.
+    scalingEnvBadge.title =
+      "On Docker Desktop, `docker stats` reports CPU as a share of the Linux " +
+      "VM's vCPUs, not the cap. Used cores may briefly exceed the allocated " +
+      "value; the bar caps at 100% but the number stays truthful.";
+  }
+
   function renderScalingCatalog() {
     scalingGrid.innerHTML = "";
     scalingCatalog.forEach(function (svc) {
@@ -796,20 +816,20 @@
       card.className = "scaling-card";
       card.id = "scaling-card-" + svc.name;
       card.dataset.source = svc.source;
+      // Numbers render as "used / allocated" (e.g. "0.40 / 0.50 cores") so a
+      // Docker Desktop overshoot is visible even though the bar caps at 100%.
       card.innerHTML =
         '<div class="scaling-head">' +
           '<strong>' + escapeHTML(svc.name) + '</strong>' +
           '<span class="scaling-source">' + escapeHTML(svc.source) + '</span>' +
         '</div>' +
         '<div class="scaling-metric">' +
-          '<div class="scaling-label">CPU <span class="scaling-num" data-field="cpu">—</span></div>' +
+          '<div class="scaling-label">CPU <span class="scaling-num" data-field="cpu">— / ' + escapeHTML(formatCPU(svc.alloc_cpu)) + '</span></div>' +
           '<div class="scaling-bar"><div class="scaling-bar-fill" data-field="cpu-bar" style="width:0%"></div></div>' +
-          '<div class="scaling-sub">allocated ' + formatCPU(svc.alloc_cpu) + '</div>' +
         '</div>' +
         '<div class="scaling-metric">' +
-          '<div class="scaling-label">Memory <span class="scaling-num" data-field="mem">—</span></div>' +
+          '<div class="scaling-label">Memory <span class="scaling-num" data-field="mem">— / ' + svc.alloc_memory_mb + ' MB</span></div>' +
           '<div class="scaling-bar"><div class="scaling-bar-fill" data-field="mem-bar" style="width:0%"></div></div>' +
-          '<div class="scaling-sub">allocated ' + svc.alloc_memory_mb + ' MB</div>' +
         '</div>';
       scalingGrid.appendChild(card);
     });
@@ -830,34 +850,56 @@
         scalingCatalog.forEach(function (svc) {
           var s = byName[svc.name];
           if (!s || s.error) {
-            updateScalingMetric(svc.name, "cpu", null, svc.alloc_cpu, formatCPU);
-            updateScalingMetric(svc.name, "mem", null, svc.alloc_memory_mb, function (v) { return v == null ? "—" : v.toFixed(0) + " MB"; });
+            updateScalingMetric(svc.name, "cpu", null, svc.alloc_cpu, formatCPUPair);
+            updateScalingMetric(svc.name, "mem", null, svc.alloc_memory_mb, formatMemPair);
             return;
           }
-          updateScalingMetric(svc.name, "cpu", s.cur_cpu_cores, svc.alloc_cpu, formatCPU);
+          updateScalingMetric(svc.name, "cpu", s.cur_cpu_cores, svc.alloc_cpu, formatCPUPair);
           var mb = (s.cur_memory_bytes || 0) / 1024 / 1024;
-          updateScalingMetric(svc.name, "mem", mb, svc.alloc_memory_mb, function (v) { return v.toFixed(0) + " MB"; });
+          updateScalingMetric(svc.name, "mem", mb, svc.alloc_memory_mb, formatMemPair);
         });
       })
       .catch(function () { /* leave previous values in place on transient failure */ });
   }
 
-  function updateScalingMetric(name, field, value, allocated, formatFn) {
+  function updateScalingMetric(name, field, value, allocated, formatPairFn) {
     var card = document.getElementById("scaling-card-" + name);
     if (!card) return;
     var numEl = card.querySelector('[data-field="' + field + '"]');
     var barEl = card.querySelector('[data-field="' + field + '-bar"]');
-    if (numEl) numEl.textContent = formatFn(value);
+    if (numEl) numEl.textContent = formatPairFn(value, allocated);
     if (!barEl) return;
     if (value == null || allocated <= 0) {
       barEl.style.width = "0%";
       barEl.classList.remove("hot", "warm");
       return;
     }
+    // Bar caps visually at 100% even if value > allocated (Docker Desktop's
+    // docker stats can briefly report this). Class triggers stay on the
+    // clamped percentage so a saturated container glows red, not invisible.
     var pct = Math.min(100, (value / allocated) * 100);
     barEl.style.width = pct.toFixed(1) + "%";
-    barEl.classList.toggle("hot", pct > 80);
-    barEl.classList.toggle("warm", pct > 50 && pct <= 80);
+    barEl.classList.toggle("hot", pct >= 100 || (value / allocated) > 1);
+    if (pct < 100 && (value / allocated) <= 1) {
+      barEl.classList.toggle("hot", pct > 80);
+      barEl.classList.toggle("warm", pct > 50 && pct <= 80);
+    } else {
+      barEl.classList.remove("warm");
+    }
+  }
+
+  // "X / Y cores" format: shows used and allocated together so an overshoot
+  // (Docker Desktop quirk) is visible in the number even though the bar caps.
+  function formatCPUPair(cur, alloc) {
+    var allocStr = formatCPU(alloc);
+    if (cur == null || isNaN(cur)) return "— / " + allocStr;
+    return formatCPU(cur) + " / " + allocStr;
+  }
+
+  function formatMemPair(curMB, allocMB) {
+    var allocStr = (allocMB != null) ? Math.round(allocMB) + " MB" : "—";
+    if (curMB == null || isNaN(curMB)) return "— / " + allocStr;
+    return Math.round(curMB) + " / " + allocStr;
   }
 
   function formatCPU(cores) {

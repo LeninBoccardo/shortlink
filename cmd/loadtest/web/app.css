@@ -319,6 +319,20 @@ html, body {
   gap: 10px;
 }
 
+.scaling-env-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  font-weight: 400;
+  padding: 2px 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 3px;
+  margin-left: 8px;
+  cursor: help;
+}
+
 .scaling-head { display: flex; align-items: baseline; gap: 8px; }
 .scaling-head strong { color: var(--text); font-size: 13px; }
 .scaling-source {

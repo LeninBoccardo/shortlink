@@ -45,9 +45,31 @@ type scalingTarget struct {
 }
 
 type scalingCatalog struct {
-	targets       []scalingTarget
-	prometheusURL string
-	httpClient    *http.Client
+	targets         []scalingTarget
+	prometheusURL   string
+	httpClient      *http.Client
+	isDockerDesktop bool
+}
+
+// scalingEnv is the small environment block returned alongside the catalog so
+// the frontend can render a "Docker Desktop" badge and tooltip explaining
+// why container CPU% can read above 100% of the allocated cap.
+type scalingEnv struct {
+	DockerDesktop bool `json:"docker_desktop"`
+}
+
+// detectDockerDesktop runs `docker info --format {{.OperatingSystem}}` once at
+// startup. On macOS/Windows the value is "Docker Desktop" (sometimes with a
+// version suffix); on stock Linux Docker it's "Ubuntu 22.04" / "Alpine ..."
+// etc. Best-effort -- failure (docker not on PATH, daemon down) returns false.
+func detectDockerDesktop() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "info", "--format", "{{.OperatingSystem}}").Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(string(out)), "docker desktop")
 }
 
 // limitsFile mirrors enough of config/local-limits.yaml for the loadtest
@@ -93,8 +115,9 @@ func loadScalingCatalog(limitsPath, prometheusURL string) (*scalingCatalog, erro
 	}
 
 	c := &scalingCatalog{
-		prometheusURL: prometheusURL,
-		httpClient:    &http.Client{Timeout: 3 * time.Second},
+		prometheusURL:   prometheusURL,
+		httpClient:      &http.Client{Timeout: 3 * time.Second},
+		isDockerDesktop: detectDockerDesktop(),
 	}
 	for _, job := range hostBinaryJobs {
 		s, ok := f.Services[job]
@@ -123,7 +146,9 @@ func loadScalingCatalog(limitsPath, prometheusURL string) (*scalingCatalog, erro
 	return c, nil
 }
 
-// servicesHandler serves GET /api/scaling-services -- the static catalog.
+// servicesHandler serves GET /api/scaling-services -- the static catalog plus
+// the runtime env block (Docker Desktop flag) so the frontend can decorate
+// container CPU% with the right caveat.
 func (c *scalingCatalog) servicesHandler(w http.ResponseWriter, r *http.Request) {
 	out := make([]scalingService, 0, len(c.targets))
 	for _, t := range c.targets {
@@ -131,7 +156,10 @@ func (c *scalingCatalog) servicesHandler(w http.ResponseWriter, r *http.Request)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(map[string]any{"services": out})
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"services": out,
+		"env":      scalingEnv{DockerDesktop: c.isDockerDesktop},
+	})
 }
 
 // statsHandler serves GET /api/scaling-stats -- current CPU + memory per

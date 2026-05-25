@@ -12,8 +12,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	"gopkg.in/yaml.v3"
 )
 
@@ -48,7 +50,20 @@ type scalingCatalog struct {
 	prometheusURL   string
 	httpClient      *http.Client
 	isDockerDesktop bool
+
+	// docker stats cache: collectContainerStats shells out `docker stats`,
+	// which forks a CLI process and samples each container — ~30-80ms per
+	// invocation. Without a cache, every browser tab × 5s poll × N forks/min
+	// adds up. singleflight dedupes concurrent requests; cacheTTL bounds
+	// staleness for back-to-back polls.
+	dockerCacheMu  sync.Mutex
+	dockerCacheAt  time.Time
+	dockerCacheVal map[string]dockerStatLine
+	dockerCacheErr error
+	dockerSF       singleflight.Group
 }
+
+const dockerStatsCacheTTL = 3 * time.Second
 
 // scalingEnv is the small environment block returned alongside the catalog so
 // the frontend can render a "Docker Desktop" badge and tooltip explaining
@@ -284,6 +299,9 @@ type dockerStatLine struct {
 // containers and matches by container name. On Docker Desktop this is the
 // reliable path -- cAdvisor's overlay-layer enumeration fails there. The
 // CLI is already a prereq of scripts/local-setup, so no new dependency.
+//
+// Result is cached for dockerStatsCacheTTL and shared across concurrent
+// requests via singleflight so multi-tab polling collapses to one fork.
 func (c *scalingCatalog) collectContainerStats(ctx context.Context) []scalingStat {
 	containers := make([]scalingTarget, 0)
 	for _, t := range c.targets {
@@ -295,8 +313,7 @@ func (c *scalingCatalog) collectContainerStats(ctx context.Context) []scalingSta
 		return nil
 	}
 
-	cmd := exec.CommandContext(ctx, "docker", "stats", "--no-stream", "--format", "{{json .}}")
-	out, err := cmd.Output()
+	byContainer, err := c.dockerStats(ctx)
 	if err != nil {
 		// Emit an Error row per container rather than dropping them silently.
 		errs := make([]scalingStat, 0, len(containers))
@@ -304,19 +321,6 @@ func (c *scalingCatalog) collectContainerStats(ctx context.Context) []scalingSta
 			errs = append(errs, scalingStat{Name: t.Name, Error: "docker stats: " + err.Error()})
 		}
 		return errs
-	}
-
-	byContainer := make(map[string]dockerStatLine)
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var d dockerStatLine
-		if err := json.Unmarshal([]byte(line), &d); err != nil {
-			continue
-		}
-		byContainer[d.Name] = d
 	}
 
 	stats := make([]scalingStat, 0, len(containers))
@@ -335,6 +339,51 @@ func (c *scalingCatalog) collectContainerStats(ctx context.Context) []scalingSta
 		})
 	}
 	return stats
+}
+
+// dockerStats returns the parsed `docker stats --no-stream` output, cached
+// for dockerStatsCacheTTL. Concurrent callers within the cache window share
+// the result; concurrent callers AFTER expiry share the refresh via
+// singleflight so we never fork two CLI processes at once.
+func (c *scalingCatalog) dockerStats(ctx context.Context) (map[string]dockerStatLine, error) {
+	// Fast path: warm cache.
+	c.dockerCacheMu.Lock()
+	if time.Since(c.dockerCacheAt) < dockerStatsCacheTTL && (c.dockerCacheVal != nil || c.dockerCacheErr != nil) {
+		val, err := c.dockerCacheVal, c.dockerCacheErr
+		c.dockerCacheMu.Unlock()
+		return val, err
+	}
+	c.dockerCacheMu.Unlock()
+
+	// Cold/expired: dedupe concurrent refreshes.
+	res, err, _ := c.dockerSF.Do("docker-stats", func() (any, error) {
+		cmd := exec.CommandContext(ctx, "docker", "stats", "--no-stream", "--format", "{{json .}}")
+		out, runErr := cmd.Output()
+		var parsed map[string]dockerStatLine
+		if runErr == nil {
+			parsed = make(map[string]dockerStatLine)
+			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				var d dockerStatLine
+				if json.Unmarshal([]byte(line), &d) == nil {
+					parsed[d.Name] = d
+				}
+			}
+		}
+		c.dockerCacheMu.Lock()
+		c.dockerCacheAt = time.Now()
+		c.dockerCacheVal = parsed
+		c.dockerCacheErr = runErr
+		c.dockerCacheMu.Unlock()
+		return parsed, runErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return res.(map[string]dockerStatLine), nil
 }
 
 // parseMemUsage parses docker stats' "35.1MiB / 512MiB" into bytes for the

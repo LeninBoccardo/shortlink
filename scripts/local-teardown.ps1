@@ -27,21 +27,29 @@ if (Test-Path $PidFile) {
         if (-not $_) { return }
         $parts = $_ -split "\s+"
         if ($parts.Count -lt 2) { return }
-        $name  = $parts[0]
-        $pid   = [int]$parts[1]
-        $proc  = Get-Process -Id $pid -ErrorAction SilentlyContinue
-        if (-not $proc) {
-            Write-Host "    $name (PID $pid) already gone" -ForegroundColor DarkGray
+        # $pid is a read-only automatic variable in PowerShell (the current
+        # process PID); writing to it warns or silently no-ops depending on
+        # version + strict mode. Use a different name.
+        $procId = 0
+        if (-not [int]::TryParse($parts[1], [ref]$procId)) {
+            Write-Host "    skipping malformed line: '$_'" -ForegroundColor Yellow
             return
         }
-        Write-Host "    $name (PID $pid) -> stopping" -ForegroundColor DarkGray
-        try {
-            $proc.CloseMainWindow() | Out-Null
-            $proc.WaitForExit(5000) | Out-Null
-        } catch {}
-        if (-not $proc.HasExited) {
-            Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+        $name = $parts[0]
+        $proc = Get-Process -Id $procId -ErrorAction SilentlyContinue
+        if (-not $proc) {
+            Write-Host "    $name (PID $procId) already gone" -ForegroundColor DarkGray
+            return
         }
+        Write-Host "    $name (PID $procId) -> stopping" -ForegroundColor DarkGray
+        # Host binaries were launched with -NoNewWindow + redirected I/O, so
+        # they have no main window. CloseMainWindow() returns false instantly
+        # for them and WaitForExit(5000) then blocks for the full 5 s before
+        # falling through to -Force -- ~20 s wasted across the four binaries.
+        # Skip the dance and TerminateProcess directly; deferred cleanup in
+        # the binaries won't run, which is acceptable for a local dev
+        # teardown (compose down -v wipes the durable state).
+        Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
     }
     Remove-Item $PidFile -ErrorAction SilentlyContinue
 } else {

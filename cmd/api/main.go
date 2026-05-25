@@ -156,11 +156,13 @@ func run() error {
 	}
 	// 2. Drain buffered analytics writes — safe now that no handler is running.
 	a.hits.shutdown()
-	// 3. Close the queue client.
+	// 3. Drain queued last-used touches — same race-free pattern as hits.
+	a.toucher.Shutdown()
+	// 4. Close the queue client.
 	if err := q.Shutdown(context.Background()); err != nil {
 		log.Error("queue shutdown", "error", err)
 	}
-	// 4. Flush any pending observer events with a bounded grace.
+	// 5. Flush any pending observer events with a bounded grace.
 	a.emitter.Close(2 * time.Second)
 	log.Info("shutdown complete")
 	return nil

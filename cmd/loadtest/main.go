@@ -114,8 +114,12 @@ func run(cfg runConfig) error {
 		log.Warn("scaling panel disabled", "error", err)
 		scaling = nil
 	}
+	// Bind to loopback only: the page exposes /tests/run/* (which shells
+	// `go test` + testcontainers) and /api/scaling-stats (which shells
+	// `docker stats`), neither of which is authenticated. Sink stays on all
+	// interfaces — container-mode worker reaches it via host.docker.internal.
 	pageSrv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", cfg.pagePort),
+		Addr:              fmt.Sprintf("127.0.0.1:%d", cfg.pagePort),
 		Handler:           page.routes(tests, scaling, cfg.prometheusURL),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

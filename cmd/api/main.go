@@ -15,6 +15,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
+
 	"github.com/leninboccardo/shortlink/internal/auth"
 	"github.com/leninboccardo/shortlink/internal/config"
 	"github.com/leninboccardo/shortlink/internal/db"
@@ -45,6 +48,8 @@ const (
 type app struct {
 	cfg       *config.Config
 	log       *slog.Logger
+	pool      *pgxpool.Pool
+	rc        *redis.Client
 	queries   *db.Queries
 	queue     queue.Queue
 	ssrf      *security.Validator
@@ -111,6 +116,8 @@ func run() error {
 	a := &app{
 		cfg:       cfg,
 		log:       log,
+		pool:      pool,
+		rc:        rc,
 		queries:   queries,
 		queue:     q,
 		ssrf:      security.NewValidator(cfg.SSRFAllowlist),

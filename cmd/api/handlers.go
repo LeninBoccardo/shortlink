@@ -35,6 +35,7 @@ func (a *app) routes() http.Handler {
 	r.Use(chimw.Recoverer)
 
 	r.Get("/healthz", a.handleHealth)
+	r.Get("/readyz", a.handleReady)
 	r.Method(http.MethodGet, "/metrics", metrics.Handler())
 
 	limitFor := func(tier string) int {
@@ -61,6 +62,24 @@ func (a *app) routes() http.Handler {
 
 func (a *app) handleHealth(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleReady is the k8s readiness probe target: 503 if Postgres or Redis
+// is unreachable so the pod gets rotated out of Service rotation rather
+// than keeping it in and failing every request. /healthz stays liveness-
+// only (process alive); a transient DB hiccup shouldn't trigger a restart.
+func (a *app) handleReady(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 1*time.Second)
+	defer cancel()
+	if err := a.pool.Ping(ctx); err != nil {
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "postgres unreachable"})
+		return
+	}
+	if err := a.rc.Ping(ctx).Err(); err != nil {
+		httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "redis unreachable"})
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
 type shortenRequest struct {

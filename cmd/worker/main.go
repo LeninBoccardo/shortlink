@@ -13,6 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
+
 	"github.com/leninboccardo/shortlink/internal/config"
 	"github.com/leninboccardo/shortlink/internal/db"
 	"github.com/leninboccardo/shortlink/internal/events"
@@ -157,7 +160,7 @@ func run() error {
 	// Health endpoint.
 	health := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.WorkerPort),
-		Handler:           healthHandler(),
+		Handler:           healthHandler(pool, rc),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -204,10 +207,27 @@ func run() error {
 	return nil
 }
 
-func healthHandler() http.Handler {
+func healthHandler(pool *pgxpool.Pool, rc *redis.Client) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	// /readyz pings deps so k8s rotates the pod out of Service rotation when
+	// PG or Redis is unreachable, rather than keeping it in and failing every
+	// dequeue. /healthz stays liveness-only — a flaky dep shouldn't restart
+	// the worker process.
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 1*time.Second)
+		defer cancel()
+		if err := pool.Ping(ctx); err != nil {
+			httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "postgres unreachable"})
+			return
+		}
+		if err := rc.Ping(ctx).Err(); err != nil {
+			httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "redis unreachable"})
+			return
+		}
+		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	})
 	mux.Handle("/metrics", metrics.Handler())
 	return mux

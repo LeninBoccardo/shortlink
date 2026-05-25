@@ -21,6 +21,7 @@ import (
 	"github.com/hibiken/asynq"
 
 	"github.com/leninboccardo/shortlink/internal/config"
+	"github.com/leninboccardo/shortlink/internal/httpx"
 	"github.com/leninboccardo/shortlink/internal/observer"
 	"github.com/leninboccardo/shortlink/internal/storage"
 )
@@ -83,6 +84,20 @@ func run() error {
 	broadcaster.Register(mux)
 	broadcaster.Start()
 	log.Info("websocket broadcaster started")
+
+	// /readyz pings Redis so k8s rotates the pod out of Service rotation when
+	// the only external dep is unreachable. /healthz (defined on the Hub)
+	// stays liveness-only — a transient Redis hiccup shouldn't restart the
+	// observer process, since events stay buffered in-memory either way.
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 1*time.Second)
+		defer cancel()
+		if err := rc.Ping(ctx).Err(); err != nil {
+			httpx.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "redis unreachable"})
+			return
+		}
+		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+	})
 
 	srv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.ObserverPort),

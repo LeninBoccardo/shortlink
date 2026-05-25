@@ -106,6 +106,39 @@ function Test-PortOwner($port) {
     return $null
 }
 
+function Remove-OrphanHostBinaries {
+    # Self-healing mirror of teardown's backstop. If a previous run
+    # crashed, was Ctrl-C'd mid-setup, or its teardown silently failed
+    # to kill a binary, the orphan is still alive and holding 8080/
+    # 8081/9090/8090/8091 -- the Assert-PortsFree check below would
+    # then abort with "Refusing to start" even though there's nothing
+    # the user can sensibly do besides "kill them yourself, then run
+    # the script again." Do it for them.
+    #
+    # Path filter is critical: "api.exe" is a generic name and we must
+    # not touch a process that just happens to share it. We only kill
+    # processes whose .Path points at this repo's bin/ dir.
+    $names = @('api', 'worker', 'observer', 'loadtest')
+    $expectedPaths = $names | ForEach-Object {
+        (Join-Path $RepoRoot "bin\$_.exe").ToLowerInvariant()
+    }
+    $orphans = Get-Process -ErrorAction SilentlyContinue | Where-Object {
+        $names -contains $_.ProcessName -and
+        $_.Path -and
+        ($expectedPaths -contains $_.Path.ToLowerInvariant())
+    }
+    if (-not $orphans) { return }
+
+    Write-Step "Cleaning up orphan shortlink processes from a prior run"
+    foreach ($p in $orphans) {
+        Write-Sub "$($p.ProcessName) (PID $($p.Id)) -> stopping"
+        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($p in $orphans) {
+        Wait-Process -Id $p.Id -Timeout 5 -ErrorAction SilentlyContinue
+    }
+}
+
 function Assert-PortsFree($ports) {
     $taken = @()
     foreach ($p in $ports) {
@@ -431,7 +464,15 @@ function Start-Binaries {
     # loadtest with a long duration so the showcase page stays up after the
     # attack ends; user can Ctrl-C via teardown.
     Start-HostBinary "loadtest" $loadtestExe @("--duration=30m", "--grafana=http://localhost:3000") @{}
-    Wait-ForHealthz "loadtest" "http://localhost:8090/healthz"
+    # 127.0.0.1 (not localhost): the loadtest showcase page binds to
+    # 127.0.0.1:8090 deliberately (cmd/loadtest/main.go — /tests/run/* and
+    # /api/scaling-stats are unauthenticated, so they must not be reachable
+    # off-host). Invoke-WebRequest in PowerShell resolves `localhost` to
+    # `::1` first and does NOT fall back to 127.0.0.1 within its TimeoutSec,
+    # so the probe would always timeout against an IPv4-only listener.
+    # The other binaries bind `:port` (dual-stack), so `localhost` works for
+    # them.
+    Wait-ForHealthz "loadtest" "http://127.0.0.1:8090/healthz"
 }
 
 function Open-Showcase {
@@ -450,6 +491,11 @@ if (-not $SkipDeps) {
     Assert-Prereqs
     Install-OptionalDeps
 }
+
+# Order matters: sweep orphans BEFORE the port check, so a previous run's
+# leftover host binaries don't make the port check fail with a message
+# the user can't act on without manual intervention.
+Remove-OrphanHostBinaries
 
 Write-Step "Checking required host ports are free"
 Assert-PortsFree $RequiredPorts

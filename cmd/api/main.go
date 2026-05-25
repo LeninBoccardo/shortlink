@@ -25,9 +25,17 @@ import (
 )
 
 const (
-	maxRequestBody  = 64 << 10                // 64 KiB cap on /shorten request bodies
-	maxURLLength    = 2048                    // SPEC §9
-	maxExpiresIn    = 10 * 365 * 24 * 60 * 60 // 10 years, in seconds
+	maxRequestBody = 64 << 10                // 64 KiB cap on /shorten request bodies
+	maxURLLength   = 2048                    // SPEC §9
+	maxExpiresIn   = 10 * 365 * 24 * 60 * 60 // 10 years, in seconds
+
+	// maxReturnsAfter is the upper bound (seconds) for item 8's
+	// `returns_after` field. Capped just below the default QR_OBJECT_TTL
+	// (15m) so the QR object the worker presigns at delivery time still
+	// exists in MinIO. Raising QR_OBJECT_TTL above 15m doesn't raise this
+	// cap — that takes a code change so the safety margin stays explicit.
+	maxReturnsAfter = 14 * 60 // 14 minutes
+
 	httpDrainWindow = 10 * time.Second
 	startupTimeout  = 15 * time.Second
 	rateLimitWindow = time.Minute // SPEC §4.1 — fixed 60s sliding window

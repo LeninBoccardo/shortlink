@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -36,13 +37,18 @@ type IntOrAuto struct {
 }
 
 func (i *IntOrAuto) UnmarshalYAML(node *yaml.Node) error {
-	if node.Value == "auto" {
+	// Accept "auto" with surrounding whitespace and any casing, since YAML
+	// accepts those forms naturally as scalars.
+	if strings.EqualFold(strings.TrimSpace(node.Value), "auto") {
 		i.Auto = true
 		return nil
 	}
 	var n int
 	if err := node.Decode(&n); err != nil {
 		return fmt.Errorf("expected integer or \"auto\", got %q", node.Value)
+	}
+	if n <= 0 {
+		return fmt.Errorf("must be > 0 or \"auto\", got %d", n)
 	}
 	i.Value = n
 	return nil
@@ -61,5 +67,29 @@ func LoadConfig(path string) (*Config, error) {
 	if len(c.Services) == 0 {
 		return nil, fmt.Errorf("%s: services block is empty or missing", path)
 	}
+	if err := validateServices(c.Services); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
 	return &c, nil
+}
+
+// validateServices rejects negative or non-positive per-service fields that
+// would either confuse downstream renderers (docker run --memory 0M) or
+// silently under-count the budget (negative max_replicas).
+func validateServices(svcs map[string]Service) error {
+	for name, s := range svcs {
+		if s.CPU <= 0 {
+			return fmt.Errorf("services.%s.cpu must be > 0, got %v", name, s.CPU)
+		}
+		if s.MemoryMB <= 0 {
+			return fmt.Errorf("services.%s.memory_mb must be > 0, got %d", name, s.MemoryMB)
+		}
+		if s.MaxReplicas < 0 {
+			return fmt.Errorf("services.%s.max_replicas must be >= 0, got %d", name, s.MaxReplicas)
+		}
+		if s.MaxReplicas > 100 {
+			return fmt.Errorf("services.%s.max_replicas must be <= 100, got %d (likely a typo)", name, s.MaxReplicas)
+		}
+	}
+	return nil
 }

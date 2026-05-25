@@ -16,8 +16,10 @@ func TestIntOrAuto_UnmarshalYAML(t *testing.T) {
 		wantErr bool
 	}{
 		{"auto literal", `auto`, true, 0, false},
+		{"auto uppercase", `AUTO`, true, 0, false},
 		{"integer", `4`, false, 4, false},
-		{"zero", `0`, false, 0, false},
+		{"zero rejected", `0`, false, 0, true},
+		{"negative rejected", `-1`, false, 0, true},
 		{"bogus string", `hello`, false, 0, true},
 	}
 	for _, tc := range cases {
@@ -107,6 +109,39 @@ func TestTrimZero(t *testing.T) {
 		if got := trimZero(in); got != want {
 			t.Errorf("trimZero(%v) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestValidateServices(t *testing.T) {
+	cases := []struct {
+		name    string
+		svcs    map[string]Service
+		wantErr string // substring; empty => no error expected
+	}{
+		{"ok", map[string]Service{"api": {CPU: 0.5, MemoryMB: 256, MaxReplicas: 2}}, ""},
+		{"zero cpu", map[string]Service{"api": {CPU: 0, MemoryMB: 256}}, "cpu must be > 0"},
+		{"negative cpu", map[string]Service{"api": {CPU: -1, MemoryMB: 256}}, "cpu must be > 0"},
+		{"zero mem", map[string]Service{"api": {CPU: 0.5, MemoryMB: 0}}, "memory_mb must be > 0"},
+		{"negative mem", map[string]Service{"api": {CPU: 0.5, MemoryMB: -10}}, "memory_mb must be > 0"},
+		{"negative replicas", map[string]Service{"api": {CPU: 0.5, MemoryMB: 256, MaxReplicas: -1}}, "max_replicas must be >= 0"},
+		{"huge replicas", map[string]Service{"api": {CPU: 0.5, MemoryMB: 256, MaxReplicas: 9999}}, "max_replicas must be <= 100"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateServices(tc.svcs)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error %q missing %q", err.Error(), tc.wantErr)
+			}
+		})
 	}
 }
 

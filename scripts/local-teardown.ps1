@@ -75,6 +75,19 @@ if (Test-Path $ContainersFile) {
     Remove-Item $ContainersFile -ErrorAction SilentlyContinue
 }
 
+# Backstop: if a previous setup crashed mid-way the file may be missing
+# or stale. Sweep up any container matching the well-known names so the
+# next setup run isn't blocked by ghost containers we never recorded.
+Write-Host ""
+Write-Host "==> Sweeping orphan shortlink containers (backstop)" -ForegroundColor Cyan
+$orphans = docker ps -aq --filter "name=^shortlink-api$" --filter "name=^shortlink-worker$" --filter "name=^shortlink-observer$" 2>$null
+if ($orphans) {
+    docker rm -f $orphans.Split() 2>&1 | Out-Null
+    Write-Host "    swept $($orphans.Split().Count) orphan(s)" -ForegroundColor DarkGray
+} else {
+    Write-Host "    none found" -ForegroundColor DarkGray
+}
+
 Write-Host ""
 Write-Host "==> Bringing the docker compose stack down" -ForegroundColor Cyan
 if ($KeepData) {

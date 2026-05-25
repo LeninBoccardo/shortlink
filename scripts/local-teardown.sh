@@ -70,6 +70,22 @@ if [ -f "$CONTAINERS_FILE" ]; then
     rm -f "$CONTAINERS_FILE"
 fi
 
+# Backstop: if a previous setup crashed mid-way the file may be missing
+# or stale. Sweep up any container matching the well-known names so the
+# next setup run isn't blocked by ghost containers we never recorded.
+step "Sweeping orphan shortlink containers (backstop)"
+orphans=$(docker ps -aq \
+    --filter "name=^shortlink-api$" \
+    --filter "name=^shortlink-worker$" \
+    --filter "name=^shortlink-observer$" 2>/dev/null)
+if [ -n "$orphans" ]; then
+    # shellcheck disable=SC2086  # word-splitting is intentional
+    docker rm -f $orphans >/dev/null 2>&1 || true
+    sub "swept $(echo "$orphans" | wc -l | tr -d ' ') orphan(s)"
+else
+    sub "none found"
+fi
+
 step "Bringing the docker compose stack down"
 if [ "$KEEP_DATA" -eq 1 ]; then
     docker compose -f deploy/docker-compose.yml down

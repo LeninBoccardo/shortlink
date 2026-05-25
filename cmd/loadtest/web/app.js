@@ -761,8 +761,9 @@
 
   // ---------- scaling panel ------------------------------------------------
   //
-  // Cards list every service in config/local-limits.yaml. CPU + memory usage
-  // come from Prometheus via a same-origin /proxy/prom proxy (no CORS).
+  // Cards list every service in config/local-limits.yaml. The loadtest binary
+  // queries Prometheus (host services) and shells `docker stats` (containers)
+  // server-side, returning one combined payload via /api/scaling-stats.
   // Allocated values come from the catalog the loadtest binary builds on
   // startup. Refreshed every 5 s.
 

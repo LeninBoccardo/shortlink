@@ -120,7 +120,7 @@ func run(cfg runConfig) error {
 	// interfaces — container-mode worker reaches it via host.docker.internal.
 	pageSrv := &http.Server{
 		Addr:              fmt.Sprintf("127.0.0.1:%d", cfg.pagePort),
-		Handler:           page.routes(tests, scaling, cfg.prometheusURL),
+		Handler:           page.routes(tests, scaling),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/exec"
@@ -371,31 +370,3 @@ func parseMemUsage(s string) (uint64, error) {
 	return uint64(n * mul), nil
 }
 
-// promProxy forwards /proxy/prom/<path> to <prometheusURL>/api/v1/<path>.
-// Only GETs to /query and /query_range are allowed. Retained for possible
-// future frontend uses; the scaling panel itself queries via /api/scaling-stats.
-func promProxy(prometheusURL string) http.HandlerFunc {
-	target, _ := url.Parse(prometheusURL)
-	rp := httputil.NewSingleHostReverseProxy(target)
-	director := rp.Director
-	rp.Director = func(r *http.Request) {
-		r.URL.Path = "/api/v1" + r.URL.Path[len("/proxy/prom"):]
-		director(r)
-		r.Host = target.Host
-	}
-	allowed := map[string]bool{
-		"/proxy/prom/query":       true,
-		"/proxy/prom/query_range": true,
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if !allowed[r.URL.Path] {
-			http.Error(w, "not found", http.StatusNotFound)
-			return
-		}
-		rp.ServeHTTP(w, r)
-	}
-}

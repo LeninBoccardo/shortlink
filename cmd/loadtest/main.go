@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -94,7 +95,7 @@ func run(cfg runConfig) error {
 	sinkErr := make(chan error, 1)
 	go func() {
 		log.Info("webhook sink listening", "addr", sinkSrv.Addr)
-		if err := sinkSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := sinkSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			sinkErr <- err
 		}
 	}()
@@ -130,7 +131,7 @@ func run(cfg runConfig) error {
 	go func() {
 		log.Info("showcase page listening", "addr", pageSrv.Addr,
 			"observer", cfg.observerURL, "grafana", cfg.grafanaURL)
-		if err := pageSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := pageSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			pageErr <- err
 		}
 	}()

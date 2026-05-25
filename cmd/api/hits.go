@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -30,6 +31,11 @@ type hitRecorder struct {
 	log     *slog.Logger
 	ch      chan hitEvent
 	wg      sync.WaitGroup
+	// done is closed by shutdown() to signal workers to drain and exit.
+	// We never close `ch` because a handler racing past srv.Shutdown's drain
+	// could call record() and panic on a send-to-closed-channel.
+	done    chan struct{}
+	stopped atomic.Bool
 }
 
 // newHitRecorder starts the recorder's worker pool.
@@ -38,6 +44,7 @@ func newHitRecorder(queries *db.Queries, log *slog.Logger) *hitRecorder {
 		queries: queries,
 		log:     log,
 		ch:      make(chan hitEvent, hitBuffer),
+		done:    make(chan struct{}),
 	}
 	for i := 0; i < hitWorkers; i++ {
 		hr.wg.Add(1)
@@ -46,9 +53,18 @@ func newHitRecorder(queries *db.Queries, log *slog.Logger) *hitRecorder {
 	return hr
 }
 
-// record queues a hit. It never blocks: if the buffer is full the hit is
-// dropped, since analytics is best-effort.
+// record queues a hit. It never blocks: if the buffer is full or the recorder
+// has already been shut down (handler outlasted srv.Shutdown's drain), the
+// hit is dropped — analytics is best-effort.
+//
+// Two-step check + send rather than one select: a single select picks
+// randomly among ready cases, so we could enqueue an event after shutdown
+// fired. The fast-path Load also avoids the channel send entirely once the
+// recorder is stopped.
 func (hr *hitRecorder) record(slug, device string) {
+	if hr.stopped.Load() {
+		return
+	}
 	select {
 	case hr.ch <- hitEvent{slug: slug, device: device}:
 	default:
@@ -56,10 +72,27 @@ func (hr *hitRecorder) record(slug, device string) {
 	}
 }
 
+// worker drains hr.ch until shutdown(); on shutdown it processes whatever is
+// still buffered and then exits. We never close hr.ch (see record's comment),
+// so the loop is select-driven rather than range-driven.
 func (hr *hitRecorder) worker() {
 	defer hr.wg.Done()
-	for ev := range hr.ch {
-		hr.write(ev)
+	for {
+		select {
+		case ev := <-hr.ch:
+			hr.write(ev)
+		case <-hr.done:
+			// Drain anything left in the buffer (record() stopped accepting
+			// new events before done was closed) and exit.
+			for {
+				select {
+				case ev := <-hr.ch:
+					hr.write(ev)
+				default:
+					return
+				}
+			}
+		}
 	}
 }
 
@@ -77,9 +110,12 @@ func (hr *hitRecorder) write(ev hitEvent) {
 	}
 }
 
-// shutdown stops intake and drains buffered hits. Call it only after the HTTP
-// server has stopped, so no further record calls race the channel close.
+// shutdown stops intake and drains buffered hits. Safe to call even while
+// in-flight handlers may still call record(): the atomic stop flag short-
+// circuits any racing record(), and `ch` is never closed so a racing send
+// that snuck past the flag check just adds one more event for the drainer.
 func (hr *hitRecorder) shutdown() {
-	close(hr.ch)
+	hr.stopped.Store(true)
+	close(hr.done)
 	hr.wg.Wait()
 }

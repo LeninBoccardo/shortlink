@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/leninboccardo/shortlink/internal/auth"
 	"github.com/leninboccardo/shortlink/internal/db"
@@ -49,7 +50,17 @@ func Auth(v *auth.Validator, t *auth.LastUsedToucher, em *events.Emitter, log *s
 			}
 			ctx := context.WithValue(r.Context(), apiKeyCtxKey, key)
 			if t != nil {
-				t.Touch(ctx, key.KeyHash, key.ID)
+				// Fire-and-forget: Touch is best-effort and was adding a
+				// Redis RTT (and on miss a PG UPDATE) to every authenticated
+				// request's tail latency. Detach from the request ctx so a
+				// client disconnect doesn't cancel mid-Set, and bound the
+				// goroutine with a 2s timeout so a wedged Redis can't pile
+				// them up indefinitely.
+				touchCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+				go func() {
+					defer cancel()
+					t.Touch(touchCtx, key.KeyHash, key.ID)
+				}()
 			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

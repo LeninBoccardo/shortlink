@@ -9,14 +9,22 @@ const (
 // ShortenJobPayload is the work item for the shorten pipeline (SPEC §7).
 // APIKeyHash + APIKeyHint ride along so the worker can attribute
 // job_complete / job_error / job_dlq events without an extra DB round-trip.
+//
+// ReturnsAfter (seconds) is item-8's `returns_after`: when nonzero, the
+// worker schedules the resulting webhook delivery for `now + ReturnsAfter`
+// instead of immediately. Zero (the default for everyone today) preserves
+// existing behavior. The field rides on the shorten payload because the
+// shorten worker is what produces the webhook job; the webhook payload
+// itself stays minimal (job_id lookup only — see WebhookJobPayload).
 type ShortenJobPayload struct {
-	JobID       string `json:"job_id"`
-	OriginalURL string `json:"original_url"`
-	WebhookURL  string `json:"webhook_url"`
-	APIKeyHash  string `json:"api_key_hash"`
-	APIKeyHint  string `json:"api_key_hint"`
-	CustomSlug  string `json:"custom_slug,omitempty"`
-	EnqueuedAt  int64  `json:"enqueued_at"`
+	JobID        string `json:"job_id"`
+	OriginalURL  string `json:"original_url"`
+	WebhookURL   string `json:"webhook_url"`
+	APIKeyHash   string `json:"api_key_hash"`
+	APIKeyHint   string `json:"api_key_hint"`
+	CustomSlug   string `json:"custom_slug,omitempty"`
+	ReturnsAfter int64  `json:"returns_after,omitempty"`
+	EnqueuedAt   int64  `json:"enqueued_at"`
 }
 
 // WebhookJobPayload is the work item for webhook delivery. It carries only the

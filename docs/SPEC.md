@@ -1106,6 +1106,8 @@ type Event struct {
 
 The observer keys `KeyStat` by `APIKeyHash` (a hash, not the secret — safe to transmit) and shows `APIKeyHint` in the UI. This avoids the collision a 6-char hint alone would cause.
 
+> **Operational note — TLS on the /ingest hop.** `APIKeyHash` is the same SHA-256 value stored as the credential record in `api_keys.key_hash`. It is sent on the wire in every event POST from api/worker to the observer. Post-audit T1.7 stripped it from the WebSocket broadcast (so anyone with the showcase page open no longer reads it) but kept it in the ingest payload because the observer's `State.Ingest` uses it as a dedup key. **In production, run the api→observer hop over TLS** — either a service-mesh (mTLS via Linkerd/Istio) or an in-cluster Service exposing HTTPS. `OBSERVER_INGEST_TOKEN` ([§14](#14-configuration)) authenticates the emitter but does not encrypt the body; a passive in-cluster sniffer on a plain-HTTP hop can correlate intercepted hashes to keys whenever DB access is later compromised. The Helm chart leaves transport encryption to the cluster operator.
+
 ### Event kinds catalogue
 
 One kind is **stat-only**: `request_completed` updates the per-key counters and the rolling p99 window but is not written to the log ring buffer (it is the highest-volume event and would flood the audit log). Every other kind is logged.

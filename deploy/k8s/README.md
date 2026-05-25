@@ -73,6 +73,18 @@ Before the API is reachable from the internet, curate
 service such as Google Safe Browsing at the API layer. See SPEC §9 *URL
 validation* for the rationale.
 
+## TLS on the api→observer ingest hop
+
+Event POSTs from api/worker to the observer carry `api_key_hash`
+(SHA-256 of the customer's raw key — the same value stored as the
+credential record). `OBSERVER_INGEST_TOKEN` authenticates the emitter
+but doesn't encrypt the wire. Run this hop over TLS in production —
+either a service mesh (Linkerd/Istio mTLS) or an in-cluster HTTPS
+Service. Without it, a passive in-cluster sniffer can collect hashes
+that become useful whenever DB access is later compromised. The chart
+itself doesn't terminate TLS; that's the cluster operator's call.
+See SPEC §10 *Event envelope* for the rationale.
+
 ## Demos
 
 To exercise the rollout demo for SPEC §16 (graceful shutdown):

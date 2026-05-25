@@ -59,7 +59,11 @@ type Querier interface {
 	// the slug-column ambiguity between hits.slug and short_urls.slug.
 	RecordHit(ctx context.Context, arg RecordHitParams) error
 	// Bumps last_used_at; the gateway throttles how often this runs via a Redis
-	// marker (SPEC §9 / LAST_USED_THROTTLE).
+	// marker (SPEC §9 / LAST_USED_THROTTLE). The revoked_at IS NULL guard
+	// prevents the async toucher from bumping a key that was revoked between
+	// the request's auth check and the touch goroutine actually firing —
+	// otherwise a revoked key would show a fresh last_used_at in admin views,
+	// confusing audit trails.
 	UpdateLastUsedAt(ctx context.Context, id pgtype.UUID) error
 }
 

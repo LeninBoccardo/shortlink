@@ -101,11 +101,15 @@ func (q *Queries) GetAPIKeyByID(ctx context.Context, id pgtype.UUID) (ApiKey, er
 }
 
 const updateLastUsedAt = `-- name: UpdateLastUsedAt :exec
-UPDATE api_keys SET last_used_at = NOW() WHERE id = $1
+UPDATE api_keys SET last_used_at = NOW() WHERE id = $1 AND revoked_at IS NULL
 `
 
 // Bumps last_used_at; the gateway throttles how often this runs via a Redis
-// marker (SPEC §9 / LAST_USED_THROTTLE).
+// marker (SPEC §9 / LAST_USED_THROTTLE). The revoked_at IS NULL guard
+// prevents the async toucher from bumping a key that was revoked between
+// the request's auth check and the touch goroutine actually firing —
+// otherwise a revoked key would show a fresh last_used_at in admin views,
+// confusing audit trails.
 func (q *Queries) UpdateLastUsedAt(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, updateLastUsedAt, id)
 	return err

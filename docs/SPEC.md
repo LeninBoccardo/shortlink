@@ -976,6 +976,8 @@ The `download_url` is **re-presigned on every delivery attempt**, so `expires_at
 - **`X-ShortLink-Job-ID`** — the job ID, for client-side deduplication (webhook delivery is at-least-once).
 - **`X-ShortLink-Key-Hint`** — the last 6 characters of the API key. A receiver that serves multiple keys (such as the load-test sink) uses this to pick the correct verification secret; a single-key client can ignore it.
 
+> **Replay note (v2).** The signature today covers only the body — there is no timestamp header and no nonce. A receiver that does not deduplicate via `X-ShortLink-Job-ID` is replay-vulnerable: an attacker who captures one delivery can re-POST it indefinitely with the same valid signature. The current contract leans on `X-ShortLink-Job-ID` deduplication as the receiver-side mitigation; a future v2 may add `X-ShortLink-Timestamp` + a ±5 minute window check to the verification recipe.
+
 ### Retry behaviour
 
 | Attempt | Delay before attempt |

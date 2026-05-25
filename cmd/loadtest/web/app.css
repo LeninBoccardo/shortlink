@@ -296,6 +296,12 @@ html, body {
   gap: 4px;
 }
 .test-steps li { line-height: 1.45; }
+/* The JS toggles steps visibility via the [hidden] attribute, but the
+   class selector above is more specific than the UA-stylesheet
+   [hidden]{display:none}, so [hidden] was being silently ignored and
+   steps stayed visible after every "Show steps" click. Restore the
+   intended semantic. */
+.test-steps[hidden] { display: none; }
 
 /* Scaling panel (Phase 3) — per-service resource cards.
    Auto-fill grid sized for laptop screens; each card shows CPU + memory

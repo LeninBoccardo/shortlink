@@ -178,8 +178,7 @@ shortlink/
 │   ├── qrcode/
 │   │   └── generator.go      # QR PNG generation (skip2/go-qrcode) + object-key naming
 │   ├── queue/
-│   │   ├── asynq.go          # Redis/asynq implementation (M2+)
-│   │   ├── inproc.go         # In-process channel implementation (M1, kept as Queue showcase)
+│   │   ├── asynq.go          # Redis/asynq implementation (only one in tree post-M2)
 │   │   ├── jobs.go           # Job type + payload definitions
 │   │   └── queue.go          # Queue interface
 │   ├── security/
@@ -866,12 +865,14 @@ Deleting a row releases its `slug` from the `UNIQUE` constraint, so a custom slu
 
 ## 7. Queue Design
 
-The queue is accessed through a `Queue` interface with two implementations:
-
-- **`inproc`** — a buffered Go channel plus a goroutine worker pool, used in Milestone 1. No external dependency; lets the full async pipeline (including the `202` contract) be built and tested before the queue infrastructure (Redis) exists. Not durable — see [§4.1 graceful shutdown](#41-api-gateway).
-- **`asynq`** — `github.com/hibiken/asynq`, Redis-backed, used from Milestone 2 onward.
-
-Swapping implementations does not change the API contract or the job payloads.
+The queue is accessed through a `Queue` interface. Historically two
+implementations existed — an in-process channel used in Milestone 1, and
+Redis/asynq from Milestone 2 onward — and the interface was designed so
+swapping them did not change the API contract or the job payloads. After M2
+the in-process variant had no callers and was removed (see git history /
+docs/AUDIT.md D1); only **`asynq`** ships today. The interface stays in
+place so a future durability swap (e.g. NATS JetStream) doesn't ripple
+through the handlers.
 
 ### Job payloads
 
@@ -1120,7 +1121,7 @@ One kind is **stat-only**: `request_completed` updates the per-key counters and 
 ### Data sources
 
 - **WebSocket to the observer** — drives the live per-key table and the log audit panel, using the `snapshot` / `stats` / `log_append` / `reset` protocol from [§4.3](#43-observer-hub).
-- **Embedded Grafana panels** (`iframe`) — the metrics monitoring section. Grafana runs independently and is always available; the page simply embeds its panels. (Grafana must be configured with `allow_embedding = true` and anonymous auth for the iframes to render.) Each iframe slot carries a `data-panel` attribute (`jobs-error-rate`, `qr-queue-depth`) that matches the **uid** of a dashboard provisioned in `deploy/grafana/dashboards/`, so a fresh stack renders immediately with no manual Grafana setup. The iframe URL appends `?kiosk=tv&theme=dark&refresh=5s` for chrome-free embedding.
+- **Embedded Grafana panels** (`iframe`) — the metrics monitoring section. Grafana runs independently and is always available; the page simply embeds its panels. (Grafana must be configured with `allow_embedding = true` and anonymous auth for the iframes to render.) Each iframe slot carries `data-uid` + `data-panel-id` attributes (e.g. `data-uid="shortlink-jobs" data-panel-id="2"`) that the page resolves against `deploy/grafana/dashboards/` provisioning, so a fresh stack renders immediately with no manual Grafana setup. The iframe URL appends `?kiosk=tv&theme=dark&refresh=5s` for chrome-free embedding.
 
 The observer WebSocket URL and the Grafana base URL are **not hard-coded**. The load test runner templates them into the served `index.html` at request time from its `--observer` and `--grafana` flags, so the page works regardless of host or port.
 
@@ -1139,9 +1140,12 @@ The observer WebSocket URL and the Grafana base URL are **not hard-coded**. The 
 │  │..ghi789│ pro │200/min ⚠│ 1203 │   0 │1203│ 0 │   —   │  │
 │  └────────┴─────┴─────────┴──────┴─────┴────┴───┴───────┘  │
 ├────────────────────────────────────────────────────────────┤
-│  MONITORING  (embedded Grafana panels)                     │
+│  MONITORING  (embedded Grafana panels, 2×2 grid)           │
 │  ┌────────────────────────┐  ┌──────────────────────────┐ │
-│  │ jobs/sec, error rate   │  │ QR gen p99, queue depth  │ │
+│  │ jobs/sec               │  │ error rate (5m)          │ │
+│  │ (iframe → Grafana)     │  │ (iframe → Grafana)       │ │
+│  ├────────────────────────┤  ├──────────────────────────┤ │
+│  │ queue depth            │  │ DLQ depth                │ │
 │  │ (iframe → Grafana)     │  │ (iframe → Grafana)       │ │
 │  └────────────────────────┘  └──────────────────────────┘ │
 ├────────────────────────────────────────────────────────────┤

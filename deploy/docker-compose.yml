@@ -31,6 +31,10 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      # Expose /minio/v2/metrics/* without a bearer token. Acceptable for the
+      # local stack (bound to localhost); production must use the default
+      # `jwt` mode and generate a token via `mc admin prometheus generate`.
+      MINIO_PROMETHEUS_AUTH_TYPE: public
     ports:
       - "9000:9000"   # S3 API
       - "9001:9001"   # web console
@@ -47,6 +51,32 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  redis-exporter:
+    # Prometheus exporter for Redis (memory, ops/sec, evicted keys, connected
+    # clients). Powers the redis-resources dashboard and the Phase 3 scaling
+    # panel widgets. Scraped by Prometheus at redis-exporter:9121.
+    image: oliver006/redis_exporter:v1.66.0
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+    ports:
+      - "9121:9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  postgres-exporter:
+    # Prometheus exporter for Postgres (connections, tup_returned/inserted,
+    # bgwriter stats, table sizes). Powers the postgres-resources dashboard
+    # and the Phase 3 scaling panel widgets. Scraped at postgres-exporter:9187.
+    image: prometheuscommunity/postgres-exporter:v0.16.0
+    environment:
+      DATA_SOURCE_NAME: "postgresql://shortlink:shortlink@postgres:5432/shortlink?sslmode=disable"
+    ports:
+      - "9187:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   pgbouncer:
     # Transaction-pooling proxy in front of Postgres (SPEC §6, §12). In k8s

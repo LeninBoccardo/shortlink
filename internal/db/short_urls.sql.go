@@ -43,16 +43,6 @@ func (q *Queries) ClaimShortURL(ctx context.Context, jobID string) (ShortUrl, er
 	return i, err
 }
 
-const clearQRObject = `-- name: ClearQRObject :exec
-UPDATE short_urls SET qr_object = NULL WHERE job_id = $1
-`
-
-// Run after the QR object is deleted from storage; the row itself is permanent.
-func (q *Queries) ClearQRObject(ctx context.Context, jobID string) error {
-	_, err := q.db.Exec(ctx, clearQRObject, jobID)
-	return err
-}
-
 const clearQRObjects = `-- name: ClearQRObjects :exec
 UPDATE short_urls SET qr_object = NULL WHERE job_id = ANY($1::text[])
 `

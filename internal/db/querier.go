@@ -17,8 +17,6 @@ type Querier interface {
 	// attempt takes over. The returned updated_at is the lease token guarding
 	// finalize/fail; a stalled worker preempted by a re-claim fails that guard.
 	ClaimShortURL(ctx context.Context, jobID string) (ShortUrl, error)
-	// Run after the QR object is deleted from storage; the row itself is permanent.
-	ClearQRObject(ctx context.Context, jobID string) error
 	// Bulk variant used by the sweeper: NULLs qr_object for many job_ids in one
 	// statement instead of N round-trips. Order vs storage delete is unchanged:
 	// the column is cleared first so a concurrent webhook handler can't Stat

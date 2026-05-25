@@ -66,10 +66,6 @@ SELECT job_id, qr_object FROM short_urls
 WHERE status = 'done' AND qr_object IS NOT NULL AND updated_at < @cutoff
 LIMIT @max_rows;
 
--- name: ClearQRObject :exec
--- Run after the QR object is deleted from storage; the row itself is permanent.
-UPDATE short_urls SET qr_object = NULL WHERE job_id = @job_id;
-
 -- name: ClearQRObjects :exec
 -- Bulk variant used by the sweeper: NULLs qr_object for many job_ids in one
 -- statement instead of N round-trips. Order vs storage delete is unchanged:

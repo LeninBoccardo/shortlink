@@ -267,8 +267,12 @@ start_container() {
     # webhooks to the loadtest sink running on the host (:8091). pgbouncer/
     # redis/minio resolve via compose DNS; observer is one of our containers
     # so address it by container name.
+    # --add-host: Docker Desktop auto-adds host.docker.internal, but Linux
+    # Docker doesn't. Without this, worker -> loadtest sink (host:8091) silently
+    # fails on Linux even though SSRF_ALLOWLIST permits the name.
     docker run -d --name "$container_name" --network shortlink_default \
         --memory "${mem}M" --cpus "$cpu" \
+        --add-host "host.docker.internal:host-gateway" \
         -p "${port}:${port}" \
         -e "DATABASE_URL=postgres://shortlink:shortlink@pgbouncer:6432/shortlink?sslmode=disable" \
         -e "REDIS_URL=redis://redis:6379" \

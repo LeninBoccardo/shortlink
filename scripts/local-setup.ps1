@@ -300,8 +300,12 @@ function Start-Container($name, $port) {
         "-e", "SSRF_ALLOWLIST=host.docker.internal,127.0.0.1,localhost"
     )
 
+    # --add-host: Docker Desktop auto-adds host.docker.internal, but Linux
+    # Docker doesn't. Without this, worker -> loadtest sink (host:8091) silently
+    # fails on Linux even though SSRF_ALLOWLIST permits the name.
     docker run -d --name $containerName --network shortlink_default `
         --memory "${mem}M" --cpus $cpu `
+        --add-host "host.docker.internal:host-gateway" `
         -p "${port}:${port}" `
         @envArgs `
         "shortlink-${name}:dev" 2>&1 | Out-Null

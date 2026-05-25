@@ -7,10 +7,18 @@
 # Flags:
 #   -KeepLogs   leave ./logs/ in place after stopping the binaries
 #   -KeepData   skip `docker compose down -v` (preserve Postgres/MinIO data)
+#   -KeepKeys   leave config/keys.yaml in place after teardown. Default is
+#               to delete it: when -v wipes the Postgres volume the api_keys
+#               table is gone too, so the hashes in keys.yaml no longer
+#               match anything. Leaving the file behind means the next
+#               setup skips keygen (file-exists guard) and every /shorten
+#               call gets 401 "missing or invalid API key". Use -KeepKeys
+#               with -KeepData when you want to preserve the full state.
 [CmdletBinding()]
 param(
     [switch]$KeepLogs,
-    [switch]$KeepData
+    [switch]$KeepData,
+    [switch]$KeepKeys
 )
 
 $ErrorActionPreference = "Continue"   # never bail mid-teardown
@@ -145,6 +153,18 @@ if ($KeepData) {
     # -v drops named volumes too (Postgres data, MinIO buckets). Default for
     # a teardown is "give me a clean slate"; -KeepData preserves them.
     docker compose -f deploy/docker-compose.yml down -v
+
+    # Coupled with the volume wipe: api_keys table is gone, so the hashes
+    # in config/keys.yaml no longer match anything in the DB. Leaving the
+    # file behind makes the next setup skip keygen and produces a fleet
+    # of 401s on every /shorten test until the user notices and re-runs
+    # keygen manually. Delete it so the next setup regenerates from scratch.
+    $keysFile = Join-Path $RepoRoot "config\keys.yaml"
+    if (-not $KeepKeys -and (Test-Path $keysFile)) {
+        Write-Host ""
+        Write-Host "==> Removing config/keys.yaml (stale after volume wipe)" -ForegroundColor Cyan
+        Remove-Item $keysFile -ErrorAction SilentlyContinue
+    }
 }
 
 if (-not $KeepLogs -and (Test-Path $LogDir)) {

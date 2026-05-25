@@ -24,6 +24,13 @@ type Querier interface {
 	ClearQRObjects(ctx context.Context, jobIds []string) error
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	DeleteOldFailedShortURLs(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
+	// Targeted rollback when the gateway inserted a pending row but then failed
+	// to enqueue the job. Pending-only guard so a worker that beat us to claim
+	// the row (shouldn't happen — Enqueue failed — but defense in depth) doesn't
+	// have its in-flight processing row yanked out from under it. Frees any
+	// reserved custom slug immediately, so the client can retry without waiting
+	// for SWEEP_STALE_AGE.
+	DeletePendingReservation(ctx context.Context, jobID string) (int64, error)
 	// Abandoned pending/processing rows past SWEEP_STALE_AGE. Deleting a row frees
 	// any custom slug it had reserved.
 	DeleteStaleReservations(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)

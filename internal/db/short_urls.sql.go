@@ -69,6 +69,25 @@ func (q *Queries) DeleteOldFailedShortURLs(ctx context.Context, cutoff pgtype.Ti
 	return result.RowsAffected(), nil
 }
 
+const deletePendingReservation = `-- name: DeletePendingReservation :execrows
+DELETE FROM short_urls
+WHERE job_id = $1 AND status = 'pending'
+`
+
+// Targeted rollback when the gateway inserted a pending row but then failed
+// to enqueue the job. Pending-only guard so a worker that beat us to claim
+// the row (shouldn't happen — Enqueue failed — but defense in depth) doesn't
+// have its in-flight processing row yanked out from under it. Frees any
+// reserved custom slug immediately, so the client can retry without waiting
+// for SWEEP_STALE_AGE.
+func (q *Queries) DeletePendingReservation(ctx context.Context, jobID string) (int64, error) {
+	result, err := q.db.Exec(ctx, deletePendingReservation, jobID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteStaleReservations = `-- name: DeleteStaleReservations :execrows
 DELETE FROM short_urls
 WHERE status IN ('pending', 'processing') AND updated_at < $1

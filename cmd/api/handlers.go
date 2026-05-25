@@ -216,6 +216,15 @@ func (a *app) handleShorten(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.queue.Enqueue(bgCtx, queue.Job{Type: queue.TypeShorten, Key: jobID, Payload: payload}); err != nil {
 		a.log.Error("enqueue shorten job", "error", err, "job_id", jobID)
+		// Roll back the pending reservation so a custom slug isn't held for
+		// SWEEP_STALE_AGE (30 min) on a transient Redis blip. Pending-only
+		// guard inside the query keeps this safe if a worker somehow beat
+		// us to the row. Best-effort: a delete failure here is logged, not
+		// surfaced — the original enqueue error is what the client gets.
+		if _, delErr := a.queries.DeletePendingReservation(bgCtx, jobID); delErr != nil {
+			a.log.Error("rollback pending reservation after enqueue failure",
+				"error", delErr, "job_id", jobID)
+		}
 		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}

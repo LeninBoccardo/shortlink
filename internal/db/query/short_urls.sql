@@ -56,6 +56,16 @@ WHERE slug = $1
 DELETE FROM short_urls
 WHERE status IN ('pending', 'processing') AND updated_at < @cutoff;
 
+-- name: DeletePendingReservation :execrows
+-- Targeted rollback when the gateway inserted a pending row but then failed
+-- to enqueue the job. Pending-only guard so a worker that beat us to claim
+-- the row (shouldn't happen — Enqueue failed — but defense in depth) doesn't
+-- have its in-flight processing row yanked out from under it. Frees any
+-- reserved custom slug immediately, so the client can retry without waiting
+-- for SWEEP_STALE_AGE.
+DELETE FROM short_urls
+WHERE job_id = $1 AND status = 'pending';
+
 -- name: DeleteOldFailedShortURLs :execrows
 DELETE FROM short_urls
 WHERE status = 'failed' AND updated_at < @cutoff;

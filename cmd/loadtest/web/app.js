@@ -416,11 +416,22 @@
     if (!sel) return;
     var current = sel.value;
     var keys = Object.keys(set).sort();
-    sel.innerHTML = '<option value="">all</option>' +
-      keys.map(function (k) {
-        var label = format ? format(k) : k;
-        return '<option value="' + k + '">' + label + '</option>';
-      }).join("");
+    // Build via DOM nodes (not innerHTML string concat) so attacker-influenced
+    // values in `set` (api_key_hint is the realistic source — derived from
+    // raw keys) can't inject markup. CSP blocks script execution today; this
+    // also blocks attribute breakouts and stops the option list from going
+    // weird if a value contains a quote.
+    sel.textContent = "";
+    var allOpt = document.createElement("option");
+    allOpt.value = "";
+    allOpt.textContent = "all";
+    sel.appendChild(allOpt);
+    keys.forEach(function (k) {
+      var opt = document.createElement("option");
+      opt.value = k;
+      opt.textContent = format ? format(k) : k;
+      sel.appendChild(opt);
+    });
     if (current && set[current]) sel.value = current;
   }
 

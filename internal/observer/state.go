@@ -303,7 +303,10 @@ func (s *State) Prune(now time.Time) {
 			kept = fresh
 		}
 		ks.latencySamples = kept
-		ks.P99Latency = computeP99(ks.latencySamples)
+		// P99 is now recomputed lazily in snapshotKeysLocked — the sort cost
+		// only fires on snapshot (broadcaster tick every 500ms, under RLock)
+		// instead of every Prune tick (every 100ms, under write Lock). Cuts
+		// sort cost 5x and stops blocking concurrent Ingest writers.
 	}
 	// Update derived system fields.
 	s.system.UptimeSeconds = int64(now.Sub(s.startedAt).Seconds())
@@ -381,11 +384,18 @@ func (s *State) StatsSnapshot() (keys []KeyStat, system SystemStat, ts time.Time
 }
 
 // snapshotKeysLocked deep-copies keyStats into a sorted []KeyStat. Caller
-// must hold s.mu.
+// must hold s.mu (read lock is sufficient — snapshot doesn't mutate state).
+//
+// P99 is recomputed here rather than in Prune so the O(N log N) sort only
+// runs at snapshot frequency (500ms) instead of Prune frequency (100ms),
+// and under the read lock rather than the write lock — so concurrent
+// Ingest writers aren't blocked. The lazy recompute uses the same samples
+// that Prune has already truncated to LatencyWindow.
 func (s *State) snapshotKeysLocked() []KeyStat {
 	keys := make([]KeyStat, 0, len(s.keyStats))
 	for _, ks := range s.keyStats {
 		ksCopy := *ks
+		ksCopy.P99Latency = computeP99(ks.latencySamples)
 		ksCopy.latencySamples = nil // exported snapshot doesn't carry raw samples
 		keys = append(keys, ksCopy)
 	}

@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/minio/minio-go/v7/pkg/lifecycle"
 )
 
 // ObjectStore wraps a MinIO / S3-compatible client scoped to a single bucket.
@@ -31,7 +33,33 @@ func NewObjectStore(ctx context.Context, endpoint, accessKey, secretKey, bucket 
 	if err := s.ensureBucket(ctx); err != nil {
 		return nil, err
 	}
+	// Best-effort: failure here doesn't block startup — the sweeper is the
+	// primary cleanup path (SPEC §6); the lifecycle rule is only a backstop
+	// for objects the sweeper misses.
+	if err := s.ensureLifecycleBackstop(ctx); err != nil {
+		slog.Warn("set bucket lifecycle backstop failed", "bucket", bucket, "error", err)
+	}
 	return s, nil
+}
+
+// ensureLifecycleBackstop installs a 1-day expiration rule on the bucket
+// (SPEC §6). Any QR object the sweeper missed gets reaped after a day,
+// independent of the worker. SetBucketLifecycle replaces the existing
+// configuration, so this is idempotent and safe to run on every boot.
+func (s *ObjectStore) ensureLifecycleBackstop(ctx context.Context) error {
+	cfg := lifecycle.NewConfiguration()
+	cfg.Rules = []lifecycle.Rule{{
+		ID:         "shortlink-qr-backstop",
+		Status:     "Enabled",
+		Expiration: lifecycle.Expiration{Days: lifecycle.ExpirationDays(1)},
+		// Empty filter == match every object in the bucket. Day-granular
+		// is fine because the sweeper handles the ~15-minute deadline.
+		RuleFilter: lifecycle.Filter{Prefix: ""},
+	}}
+	if err := s.client.SetBucketLifecycle(ctx, s.bucket, cfg); err != nil {
+		return fmt.Errorf("set lifecycle on %q: %w", s.bucket, err)
+	}
+	return nil
 }
 
 func (s *ObjectStore) ensureBucket(ctx context.Context) error {

@@ -22,7 +22,10 @@ const (
 func runHeartbeat(ctx context.Context, rc *redis.Client, podID string, log *slog.Logger) {
 	key := "pod:" + podID + ":alive"
 	refresh := func() {
-		if err := rc.Set(ctx, key, "1", heartbeatTTL).Err(); err != nil && ctx.Err() == nil {
+		// Per-call timeout: a wedged Redis at SIGTERM mustn't hang shutdown.
+		setCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		if err := rc.Set(setCtx, key, "1", heartbeatTTL).Err(); err != nil && ctx.Err() == nil {
 			log.Warn("pod heartbeat", "error", err)
 		}
 	}

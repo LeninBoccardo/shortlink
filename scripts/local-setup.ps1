@@ -255,11 +255,13 @@ function Start-HostBinary($name, $exe, $argList, $envVars) {
         [Environment]::SetEnvironmentVariable($k, $envVars[$k])
     }
     try {
+        # -NoNewWindow runs the child in the current console; PowerShell 7+
+        # rejects combining it with -WindowStyle, so we don't pass the latter.
         $proc = Start-Process -FilePath $exe -ArgumentList $argList `
             -WorkingDirectory $RepoRoot `
             -RedirectStandardOutput $logOut `
             -RedirectStandardError $logErr `
-            -PassThru -NoNewWindow -WindowStyle Hidden
+            -PassThru -NoNewWindow
     } finally {
         foreach ($k in $envVars.Keys) {
             [Environment]::SetEnvironmentVariable($k, $saved[$k])
@@ -267,7 +269,8 @@ function Start-HostBinary($name, $exe, $argList, $envVars) {
     }
     Add-Content -Path $PidFile -Value "$name $($proc.Id)"
     Write-Sub "$name -> PID $($proc.Id), log: $logOut"
-    return $proc
+    # No return: the unassigned $proc object would otherwise leak its column
+    # listing (NPM/PM/WS/CPU/Id/SI/ProcessName) into the script's stdout.
 }
 
 function Wait-ForHealthz($name, $url, $timeoutSec = 30) {

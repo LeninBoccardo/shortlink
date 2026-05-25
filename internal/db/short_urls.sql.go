@@ -184,15 +184,6 @@ func (q *Queries) GetShortURLByJobID(ctx context.Context, jobID string) (ShortUr
 	return i, err
 }
 
-const incrementHitCount = `-- name: IncrementHitCount :exec
-UPDATE short_urls SET hit_count = hit_count + 1 WHERE slug = $1
-`
-
-func (q *Queries) IncrementHitCount(ctx context.Context, slug pgtype.Text) error {
-	_, err := q.db.Exec(ctx, incrementHitCount, slug)
-	return err
-}
-
 const insertPendingShortURL = `-- name: InsertPendingShortURL :one
 INSERT INTO short_urls (job_id, original_url, api_key_id, webhook_url, expires_at, status)
 VALUES ($1, $2, $3, $4, $5, 'pending')

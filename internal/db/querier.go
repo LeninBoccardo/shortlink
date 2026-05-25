@@ -41,8 +41,6 @@ type Querier interface {
 	// anything else yields pgx.ErrNoRows, which the handler maps to 404.
 	GetActiveShortURLBySlug(ctx context.Context, slug pgtype.Text) (ShortUrl, error)
 	GetShortURLByJobID(ctx context.Context, jobID string) (ShortUrl, error)
-	IncrementHitCount(ctx context.Context, slug pgtype.Text) error
-	InsertHit(ctx context.Context, arg InsertHitParams) error
 	// Generated-slug path: slug stays NULL until the worker assigns one.
 	InsertPendingShortURL(ctx context.Context, arg InsertPendingShortURLParams) (pgtype.UUID, error)
 	// Custom-slug path: the slug is reserved at insert time. ON CONFLICT DO NOTHING
@@ -51,6 +49,12 @@ type Querier interface {
 	InsertPendingShortURLWithSlug(ctx context.Context, arg InsertPendingShortURLWithSlugParams) (pgtype.UUID, error)
 	// done rows whose QR object has outlived QR_OBJECT_TTL and is still present.
 	ListExpiredQRObjects(ctx context.Context, arg ListExpiredQRObjectsParams) ([]ListExpiredQRObjectsRow, error)
+	// Single round-trip per redirect: inserts the hits row and bumps the
+	// short_urls counter in one statement (the CTE runs the insert; the outer
+	// UPDATE bumps the counter). Replaces the prior InsertHit + IncrementHitCount
+	// pair, halving the PG round-trips on the redirect path. Named params dodge
+	// the slug-column ambiguity between hits.slug and short_urls.slug.
+	RecordHit(ctx context.Context, arg RecordHitParams) error
 	// Bumps last_used_at; the gateway throttles how often this runs via a Redis
 	// marker (SPEC §9 / LAST_USED_THROTTLE).
 	UpdateLastUsedAt(ctx context.Context, id pgtype.UUID) error

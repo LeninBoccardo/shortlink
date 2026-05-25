@@ -11,18 +11,26 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const insertHit = `-- name: InsertHit :exec
-INSERT INTO hits (slug, country, device)
-VALUES ($1, $2, $3)
+const recordHit = `-- name: RecordHit :exec
+WITH ins AS (
+    INSERT INTO hits (slug, country, device)
+    VALUES ($1, $2, $3)
+)
+UPDATE short_urls SET hit_count = hit_count + 1 WHERE short_urls.slug = $1
 `
 
-type InsertHitParams struct {
-	Slug    string      `json:"slug"`
+type RecordHitParams struct {
+	Slug    pgtype.Text `json:"slug"`
 	Country pgtype.Text `json:"country"`
 	Device  pgtype.Text `json:"device"`
 }
 
-func (q *Queries) InsertHit(ctx context.Context, arg InsertHitParams) error {
-	_, err := q.db.Exec(ctx, insertHit, arg.Slug, arg.Country, arg.Device)
+// Single round-trip per redirect: inserts the hits row and bumps the
+// short_urls counter in one statement (the CTE runs the insert; the outer
+// UPDATE bumps the counter). Replaces the prior InsertHit + IncrementHitCount
+// pair, halving the PG round-trips on the redirect path. Named params dodge
+// the slug-column ambiguity between hits.slug and short_urls.slug.
+func (q *Queries) RecordHit(ctx context.Context, arg RecordHitParams) error {
+	_, err := q.db.Exec(ctx, recordHit, arg.Slug, arg.Country, arg.Device)
 	return err
 }

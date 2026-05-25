@@ -50,9 +50,6 @@ WHERE slug = $1
   AND status = 'done'
   AND (expires_at IS NULL OR expires_at > NOW());
 
--- name: IncrementHitCount :exec
-UPDATE short_urls SET hit_count = hit_count + 1 WHERE slug = $1;
-
 -- name: DeleteStaleReservations :execrows
 -- Abandoned pending/processing rows past SWEEP_STALE_AGE. Deleting a row frees
 -- any custom slug it had reserved.

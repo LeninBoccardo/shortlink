@@ -66,15 +66,14 @@ func (hr *hitRecorder) worker() {
 func (hr *hitRecorder) write(ev hitEvent) {
 	ctx, cancel := context.WithTimeout(context.Background(), hitWriteTTL)
 	defer cancel()
-	if err := hr.queries.InsertHit(ctx, db.InsertHitParams{
-		Slug:    ev.slug,
+	// One round-trip: the CTE inserts the hits row and the outer UPDATE bumps
+	// the short_urls counter in the same statement.
+	if err := hr.queries.RecordHit(ctx, db.RecordHitParams{
+		Slug:    pgtype.Text{String: ev.slug, Valid: true},
 		Country: pgtype.Text{Valid: false}, // GeoIP is a v2 item
 		Device:  pgtype.Text{String: ev.device, Valid: ev.device != ""},
 	}); err != nil {
 		hr.log.Warn("record hit", "error", err, "slug", ev.slug)
-	}
-	if err := hr.queries.IncrementHitCount(ctx, pgtype.Text{String: ev.slug, Valid: true}); err != nil {
-		hr.log.Warn("increment hit count", "error", err, "slug", ev.slug)
 	}
 }
 

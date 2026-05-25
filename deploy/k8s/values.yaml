@@ -88,6 +88,13 @@ config:
   lastUsedThrottle: 5m
   queueDepthThreshold: 100
   ssrfAllowlist: ""   # comma-separated; empty = production-strict
+  # urlBlocklist gates the host of every URL submitted to /shorten. Empty
+  # means anyone with any tier key can shorten arbitrary http(s) URLs —
+  # standard shortener tradeoff, but operationally this turns the service
+  # into a redirect-laundering surface for phishing. Curate a comma-
+  # separated list (e.g. "bit.ly,tinyurl.com,known-phishing-domain.tld")
+  # or wire in Safe Browsing / abuse-list lookups at the API layer before
+  # going public.
   urlBlocklist: ""
   # Comma-separated origins the observer's WebSocket upgrader trusts. The
   # showcase page is not deployed in-cluster, so the default is empty

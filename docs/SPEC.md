@@ -1059,6 +1059,8 @@ Submitted `url` values (the link being shortened) are validated before enqueuing
 - Domain must not be on `URL_BLOCKLIST` (configurable list of self-referential and abused domains).
 - Maximum length: 2048 characters.
 
+> **Operational note — open redirect.** With an empty `URL_BLOCKLIST` (the default), any client with any tier key can shorten an arbitrary http(s) URL — the standard shortener tradeoff, but operationally this turns the service into a redirect-laundering surface for phishing and malware payloads. **Curate a real blocklist before going public**, or integrate a reputation service (e.g. Google Safe Browsing) at the API layer. The Helm `values.yaml` `config.urlBlocklist` is the configured-prod entry point; the local stack ships empty because there is no public-facing exposure.
+
 ---
 
 ## 10. Observability Events
@@ -1448,7 +1450,7 @@ All binaries are configured through environment variables, parsed by `internal/c
 | `LAST_USED_THROTTLE` | `5m` | api | `last_used_at` write-throttle window |
 | `WEBHOOK_MAX_ATTEMPTS` | `5` | worker | Webhook delivery attempts before archiving |
 | `SSRF_ALLOWLIST` | (empty) | api, worker | Comma-separated hosts/CIDRs exempt from the internal-IP block ([§9](#9-security)). Empty in production; the local stack sets it to `host.docker.internal` so the API/worker can reach the host-run webhook sink |
-| `URL_BLOCKLIST` | (empty) | api | Comma-separated domains rejected for submitted URLs |
+| `URL_BLOCKLIST` | (empty) | api | Comma-separated domains rejected for submitted URLs. **Required-curated in production**: empty default allows arbitrary URL shortening (open-redirect surface). See [§9 URL validation](#9-security). |
 | `POD_ID` | hostname | worker | Identity for the Redis heartbeat key (k8s: downward API `metadata.name`) |
 
 Secrets (`DATABASE_URL`, `REDIS_URL`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`) come from a Kubernetes `Secret` in production and from `docker-compose.yml` / a local `.env` file in development.

@@ -59,6 +59,22 @@ make k8s-status      # deploy/pod/svc/job/scaledobject/networkpolicy summary
 make k8s-down        # uninstall the release (cluster stays up)
 ```
 
+## Before exposing the API publicly
+
+The chart's default `values.yaml` ships **production-safe** for SSRF
+(`config.ssrfAllowlist: ""`) and **demo-permissive** for the open-redirect
+surface (`config.urlBlocklist: ""`). The latter is fine for an internal demo
+on a private network — but anyone with any tier key can shorten arbitrary
+`http(s)` URLs, so a public deployment turns your domain into a redirect-
+laundering surface for phishing.
+
+Before the API is reachable from the internet, curate
+`config.urlBlocklist` (comma-separated domains), or wire a reputation
+service such as Google Safe Browsing at the API layer. See SPEC §9 *URL
+validation* for the rationale.
+
+## Demos
+
 To exercise the rollout demo for SPEC §16 (graceful shutdown):
 
 ```sh

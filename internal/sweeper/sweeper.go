@@ -93,6 +93,9 @@ func (s *Sweeper) sweepFailed(ctx context.Context, now time.Time) {
 }
 
 // sweepQRObjects deletes QR objects past QR_OBJECT_TTL and NULLs the column.
+// Both the column clear and the MinIO delete are bulked: one SQL statement
+// and one S3 multi-object-delete request, replacing the prior per-row loop
+// that issued up to 2*qrBatchSize sequential round-trips per tick.
 func (s *Sweeper) sweepQRObjects(ctx context.Context, now time.Time) {
 	rows, err := s.queries.ListExpiredQRObjects(ctx, db.ListExpiredQRObjectsParams{
 		Cutoff:  ts(now.Add(-s.qrObjectTTL)),
@@ -102,30 +105,35 @@ func (s *Sweeper) sweepQRObjects(ctx context.Context, now time.Time) {
 		s.log.Error("list expired qr objects", "error", err)
 		return
 	}
-	var cleared int
+	jobIDs := make([]string, 0, len(rows))
+	keys := make([]string, 0, len(rows))
 	for _, r := range rows {
 		if !r.QrObject.Valid {
 			continue
 		}
-		// Null the row's qr_object pointer BEFORE deleting the object so a
-		// concurrent webhook handler that loaded the row a moment earlier
-		// can't Stat a key the sweeper is about to delete (M9a-B5). The
-		// handler's QrObject.Valid guard means any later load drops the
-		// delivery cleanly. Failed store.Delete leaves a MinIO orphan; the
-		// SPEC §6 1-day lifecycle rule is the documented backstop.
-		key := r.QrObject.String
-		if err := s.queries.ClearQRObject(ctx, r.JobID); err != nil {
-			s.log.Warn("clear qr_object column", "error", err, "job_id", r.JobID)
-			continue
-		}
-		if err := s.store.Delete(ctx, key); err != nil {
-			s.log.Warn("delete qr object (orphan)", "error", err, "job_id", r.JobID, "key", key)
-			continue
-		}
-		cleared++
+		jobIDs = append(jobIDs, r.JobID)
+		keys = append(keys, r.QrObject.String)
 	}
+	if len(jobIDs) == 0 {
+		return
+	}
+	// Null the qr_object column BEFORE deleting the storage object so a
+	// concurrent webhook handler that loaded the row a moment earlier can't
+	// Stat a key the sweeper is about to delete (M9a-B5). The handler's
+	// QrObject.Valid guard means any later load drops the delivery cleanly.
+	// Per-key Delete failures leave MinIO orphans; the SPEC §6 1-day
+	// lifecycle rule is the documented backstop.
+	if err := s.queries.ClearQRObjects(ctx, jobIDs); err != nil {
+		s.log.Error("clear qr_object columns (bulk)", "error", err, "count", len(jobIDs))
+		return
+	}
+	delErrs := s.store.DeleteMany(ctx, keys)
+	for _, derr := range delErrs {
+		s.log.Warn("delete qr object (orphan)", "error", derr)
+	}
+	cleared := len(keys) - len(delErrs)
 	if cleared > 0 {
-		s.log.Info("reclaimed expired qr objects", "count", cleared)
+		s.log.Info("reclaimed expired qr objects", "count", cleared, "orphans", len(delErrs))
 	}
 }
 

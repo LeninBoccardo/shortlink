@@ -88,3 +88,25 @@ func (s *ObjectStore) Delete(ctx context.Context, key string) error {
 	}
 	return nil
 }
+
+// DeleteMany removes a batch of objects in a single multi-object-delete
+// request to S3/MinIO (one HTTP round-trip for up to 1000 objects per chunk).
+// Returns the per-key errors collected from the response stream; the slice is
+// empty when every delete succeeded. Empty input is a no-op.
+func (s *ObjectStore) DeleteMany(ctx context.Context, keys []string) []error {
+	if len(keys) == 0 {
+		return nil
+	}
+	objectsCh := make(chan minio.ObjectInfo, len(keys))
+	for _, k := range keys {
+		objectsCh <- minio.ObjectInfo{Key: k}
+	}
+	close(objectsCh)
+	var errs []error
+	for rerr := range s.client.RemoveObjects(ctx, s.bucket, objectsCh, minio.RemoveObjectsOptions{}) {
+		if rerr.Err != nil {
+			errs = append(errs, fmt.Errorf("delete %q: %w", rerr.ObjectName, rerr.Err))
+		}
+	}
+	return errs
+}

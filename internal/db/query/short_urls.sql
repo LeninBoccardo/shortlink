@@ -69,3 +69,10 @@ LIMIT @max_rows;
 -- name: ClearQRObject :exec
 -- Run after the QR object is deleted from storage; the row itself is permanent.
 UPDATE short_urls SET qr_object = NULL WHERE job_id = @job_id;
+
+-- name: ClearQRObjects :exec
+-- Bulk variant used by the sweeper: NULLs qr_object for many job_ids in one
+-- statement instead of N round-trips. Order vs storage delete is unchanged:
+-- the column is cleared first so a concurrent webhook handler can't Stat
+-- a key we're about to delete.
+UPDATE short_urls SET qr_object = NULL WHERE job_id = ANY(@job_ids::text[]);

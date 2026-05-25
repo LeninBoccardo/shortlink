@@ -19,6 +19,11 @@ type Querier interface {
 	ClaimShortURL(ctx context.Context, jobID string) (ShortUrl, error)
 	// Run after the QR object is deleted from storage; the row itself is permanent.
 	ClearQRObject(ctx context.Context, jobID string) error
+	// Bulk variant used by the sweeper: NULLs qr_object for many job_ids in one
+	// statement instead of N round-trips. Order vs storage delete is unchanged:
+	// the column is cleared first so a concurrent webhook handler can't Stat
+	// a key we're about to delete.
+	ClearQRObjects(ctx context.Context, jobIds []string) error
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	DeleteOldFailedShortURLs(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
 	// Abandoned pending/processing rows past SWEEP_STALE_AGE. Deleting a row frees

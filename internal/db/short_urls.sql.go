@@ -53,6 +53,19 @@ func (q *Queries) ClearQRObject(ctx context.Context, jobID string) error {
 	return err
 }
 
+const clearQRObjects = `-- name: ClearQRObjects :exec
+UPDATE short_urls SET qr_object = NULL WHERE job_id = ANY($1::text[])
+`
+
+// Bulk variant used by the sweeper: NULLs qr_object for many job_ids in one
+// statement instead of N round-trips. Order vs storage delete is unchanged:
+// the column is cleared first so a concurrent webhook handler can't Stat
+// a key we're about to delete.
+func (q *Queries) ClearQRObjects(ctx context.Context, jobIds []string) error {
+	_, err := q.db.Exec(ctx, clearQRObjects, jobIds)
+	return err
+}
+
 const deleteOldFailedShortURLs = `-- name: DeleteOldFailedShortURLs :execrows
 DELETE FROM short_urls
 WHERE status = 'failed' AND updated_at < $1

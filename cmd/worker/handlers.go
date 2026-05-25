@@ -175,9 +175,39 @@ func (w *worker) handleWebhookJob(ctx context.Context, payload []byte) (err erro
 		}
 		return fmt.Errorf("load %s: %w", p.JobID, loadErr)
 	}
-	if row.Status != "done" || !row.Slug.Valid || !row.QrObject.Valid {
+	if row.Status != "done" || !row.Slug.Valid {
 		w.log.Warn("webhook job for non-finalized row, skipping",
 			"job_id", p.JobID, "status", row.Status)
+		return nil
+	}
+	// QR object swept out from under us (sweeper deleted it after
+	// QR_OBJECT_TTL while this webhook job was still queued/retrying).
+	// Previously this returned nil and the client never heard back; now
+	// we emit webhook_failed so the failure is visible in the observer
+	// and the metric counters, and we don't try to deliver a payload
+	// whose download_url would 404.
+	if !row.QrObject.Valid {
+		apiKey, err := w.queries.GetAPIKeyByID(ctx, row.ApiKeyID)
+		if err != nil {
+			return fmt.Errorf("load api key for swept-qr %s: %w", p.JobID, err)
+		}
+		w.log.Error("webhook job for done row with swept QR object",
+			"job_id", p.JobID)
+		w.emitter.Emit(events.Event{
+			Level:      events.LevelError,
+			Kind:       events.KindWebhookFailed,
+			APIKeyHash: apiKey.KeyHash,
+			APIKeyHint: apiKey.KeyHint,
+			Message:    "webhook abandoned: QR object expired before delivery",
+			Meta: map[string]any{
+				"job_id":      p.JobID,
+				"error_class": "qr_object_swept",
+			},
+		})
+		metrics.WebhookAttemptsTotal.WithLabelValues(metrics.WebhookStatusFailure).Inc()
+		metrics.JobsTotal.WithLabelValues(metrics.QueueWebhook, metrics.JobStatusDLQ).Inc()
+		// Return nil — there's nothing to retry, so don't ask asynq to
+		// re-attempt. This is a terminal, non-recoverable outcome.
 		return nil
 	}
 

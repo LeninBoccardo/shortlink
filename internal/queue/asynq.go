@@ -73,10 +73,18 @@ func (q *AsynqQueue) Register(jobType string, h Handler) {
 
 // Enqueue submits a job. The job key becomes the asynq TaskID, so a repeated
 // enqueue of the same job_id is deduplicated and reported as success.
+//
+// When job.Delay > 0 the job is scheduled via asynq.ProcessIn instead of
+// firing immediately — asynq's scheduler picks it up at the deadline. Zero
+// delay keeps the existing immediate-enqueue path (no behavior change for
+// any current caller).
 func (q *AsynqQueue) Enqueue(ctx context.Context, job Job) error {
 	opts := []asynq.Option{asynq.Queue(job.Type)}
 	if job.Key != "" {
 		opts = append(opts, asynq.TaskID(job.Key))
+	}
+	if job.Delay > 0 {
+		opts = append(opts, asynq.ProcessIn(job.Delay))
 	}
 	switch job.Type {
 	case TypeShorten:

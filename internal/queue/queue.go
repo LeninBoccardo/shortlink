@@ -3,14 +3,22 @@
 // implementation is used — both behind this same interface (SPEC §7).
 package queue
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Job is a unit of work: a type tag, a stable key for enqueue-deduplication,
 // and a JSON-encoded payload.
+//
+// Delay schedules the job for `now + Delay` instead of immediate processing.
+// Zero (the default for everyone today) preserves existing immediate-fire
+// behavior. Used by item 8's `returns_after` to defer webhook delivery.
 type Job struct {
 	Type    string // job type; also the asynq queue name
 	Key     string // stable identifier (the job_id) — deduplicates re-enqueues
 	Payload []byte
+	Delay   time.Duration
 }
 
 // Handler processes one job payload. A non-nil error marks the attempt failed;

@@ -103,10 +103,11 @@ or refuse to run when keys already exist unless `--force` is given.
 
 ## Deferred — dead code
 
-### D1 — `internal/queue/inproc.go` unused since M2 (score 2, confidence 100%)
-~110 lines; no binary constructs `InProc`. Kept intentionally per SPEC §7
-(two implementations behind the `Queue` interface). *Decision needed:* keep it
-as a deliberate showcase of the abstraction, or delete it.
+### D1 — `internal/queue/inproc.go` (resolved post-audit Tier 3)
+
+Deleted. No binary constructed `InProc`, the "showcase of the abstraction"
+framing wasn't load-bearing, and SPEC §7's directory listing was updated to
+match. Git history preserves the implementation if it's ever wanted back.
 
 ### D3 — generated `db.Querier` interface unused (score 1, confidence 100%)
 Emitted by `emit_interface: true` in `sqlc.yaml`. Harmless; useful later for

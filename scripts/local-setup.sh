@@ -312,11 +312,24 @@ wait_for_healthz() {
     exit 8
 }
 
+remove_previous_containers() {
+    # Cleans containers recorded by a prior setup run (whether container mode
+    # or not this time). Without this, host->container->host sequences leave
+    # stale `shortlink-{api,worker,observer}` containers running because the
+    # file gets deleted while the containers stay alive. Also salvages
+    # partial-failure state from the last run.
+    [ -f "$CONTAINERS_FILE" ] || return 0
+    while read -r _name cname; do
+        [ -n "$cname" ] && docker rm -f "$cname" >/dev/null 2>&1 || true
+    done < "$CONTAINERS_FILE"
+    rm -f "$CONTAINERS_FILE"
+}
+
 start_binaries() {
     step "Launching host binaries"
     mkdir -p "$LOG_DIR"
     : > "$PID_FILE"
-    rm -f "$CONTAINERS_FILE"
+    remove_previous_containers
 
     if [ "$CONTAINER_MODE" -eq 1 ]; then
         : > "$CONTAINERS_FILE"

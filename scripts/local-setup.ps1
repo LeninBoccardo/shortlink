@@ -362,12 +362,28 @@ function Wait-ForHealthz($name, $url, $timeoutSec = 30) {
     throw "$name never returned 200 from $url within $timeoutSec s. Check $LogDir\$name.err for startup errors."
 }
 
+function Remove-PreviousContainers {
+    # Cleans containers recorded by a prior setup run (whether ContainerMode
+    # or not this time). Without this, host->container->host sequences leave
+    # stale `shortlink-{api,worker,observer}` containers running because the
+    # file gets deleted while the containers stay alive. Also salvages
+    # partial-failure state from the last run.
+    if (-not (Test-Path $ContainersFile)) { return }
+    Get-Content $ContainersFile | ForEach-Object {
+        $parts = $_ -split '\s+', 2
+        if ($parts.Count -ge 2 -and $parts[1]) {
+            docker rm -f $parts[1] 2>&1 | Out-Null
+        }
+    }
+    Remove-Item $ContainersFile
+}
+
 function Start-Binaries {
     Write-Step "Launching host binaries"
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
     if (Test-Path $PidFile) { Remove-Item $PidFile }
     New-Item -ItemType File -Path $PidFile | Out-Null
-    if (Test-Path $ContainersFile) { Remove-Item $ContainersFile }
+    Remove-PreviousContainers
     if ($ContainerMode) { New-Item -ItemType File -Path $ContainersFile | Out-Null }
 
     $apiExe      = Join-Path $RepoRoot "bin\api.exe"

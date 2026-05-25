@@ -1321,14 +1321,16 @@ Notes:
 ### Makefile targets
 
 ```makefile
-make stack-up     # docker compose up -d (infra only — see §13)
-make migrate      # run the goose migration container against the local Postgres
-make run-api      # build + run cmd/api against the local stack
-make run-worker   # build + run cmd/worker against the local stack
-make run-observer # build + run cmd/observer
+make dev          # docker compose up -d for the full local infra (see §13)
+make dev-down     # tear the local stack down
+make stack-up     # docker compose up -d for Prometheus + Grafana only
+make migrate      # run goose migrations against the local Postgres
 make keys         # run cmd/keygen: generate 3 test API keys (free, pro,
                   # abuser) + webhook secrets, insert hashes, write keys.yaml
-make loadtest     # go run ./cmd/loadtest with defaults (also serves :8090)
+make run-api      # build + run cmd/api on the host
+make run-worker   # build + run cmd/worker on the host
+make run-observer # build + run cmd/observer on the host
+make loadtest     # go run ./cmd/loadtest (also serves the showcase on :8090)
 make build        # build every binary into ./bin
 make test         # go test ./...
 make test-integration  # go test -tags integration ./tests/... (needs Docker)

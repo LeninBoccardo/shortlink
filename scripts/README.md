@@ -47,17 +47,23 @@ In order:
 3. **Port check.** Refuses to start if any of the required host ports are
    held by another process — no auto-kill. The compose ports get a softer
    check that skips if the compose stack is already up (idempotent re-runs).
-4. **Docker compose up** with `deploy/docker-compose.yml`, then waits for
-   Postgres and Redis to report healthy (up to 45 s).
-5. **Apply migrations** via `go run ./cmd/migrate up`.
-6. **Generate test API keys** via `go run ./cmd/keygen` — skipped if
+4. **Render local limits.** Runs `go run ./cmd/limits render` which validates
+   `config/local-limits.yaml` against detected host capacity and writes
+   `deploy/docker-compose.override.yml` (and `deploy/k8s/values-local.yaml`).
+   An over-budget config fails fast with the largest contributors listed.
+   See SPEC §13 *Local resource limits*.
+5. **Docker compose up** with `deploy/docker-compose.yml` + the rendered
+   override file, then waits for Postgres and Redis to report healthy
+   (up to 45 s).
+6. **Apply migrations** via `go run ./cmd/migrate up`.
+7. **Generate test API keys** via `go run ./cmd/keygen` — skipped if
    `config/keys.yaml` already exists.
-7. **Build the host binaries** into `./bin/` via `go build`.
-8. **Launch host binaries** (api, worker, observer, loadtest) as background
+8. **Build the host binaries** into `./bin/` via `go build`.
+9. **Launch host binaries** (api, worker, observer, loadtest) as background
    processes. PIDs are recorded in `.shortlink-pids`. Stdout and stderr are
    teed into `./logs/{api,worker,observer,loadtest}.{log,err}`.
-9. **Wait for `/healthz`** on each binary (up to 30 s each).
-10. **Open the showcase page** in your default browser, unless `--no-open`.
+10. **Wait for `/healthz`** on each binary (up to 30 s each).
+11. **Open the showcase page** in your default browser, unless `--no-open`.
 
 The setup script is idempotent — re-running it stops the old binaries
 (via the PID file) and restarts them, while reusing already-healthy

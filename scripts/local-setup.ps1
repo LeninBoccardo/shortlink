@@ -4,13 +4,15 @@
 #   1. Verifies prerequisites you must supply yourself (docker, go, git)
 #   2. Auto-installs missing optional deps (make, optionally kind + helm)
 #   3. Refuses to start if any of the required host ports are taken
-#   4. Brings up the docker compose infra (Postgres, PgBouncer, Redis,
-#      MinIO, Prometheus, Grafana)
-#   5. Applies migrations and generates test API keys
-#   6. Builds the shortlink binaries into ./bin
-#   7. Launches api / worker / observer / loadtest in the background, tees
+#   4. Renders deploy/docker-compose.override.yml from config/local-limits.yaml
+#      via cmd/limits; aborts if the requested caps don't fit the host
+#   5. Brings up the docker compose infra (Postgres, PgBouncer, Redis,
+#      MinIO, Prometheus, Grafana, redis/postgres-exporter)
+#   6. Applies migrations and generates test API keys
+#   7. Builds the shortlink binaries into ./bin
+#   8. Launches api / worker / observer / loadtest in the background, tees
 #      their stdout+stderr into ./logs/, records PIDs in .shortlink-pids
-#   8. Waits for each /healthz, then opens the showcase page in your browser
+#   9. Waits for each /healthz, then opens the showcase page in your browser
 #
 # Re-run idempotently: existing healthy containers are reused, the PID file
 # is rewritten with the fresh process IDs. Use scripts/local-teardown.ps1
@@ -200,9 +202,21 @@ function Install-OptionalDeps {
     }
 }
 
+function Render-Limits {
+    # cmd/limits validates that config/local-limits.yaml fits the host's
+    # detected capacity, then writes deploy/docker-compose.override.yml
+    # (and deploy/k8s/values-local.yaml for the optional k8s walkthrough).
+    # Failure here means the host can't accommodate the requested limits;
+    # the error message lists the largest contributors so the user knows
+    # what to shrink in config/local-limits.yaml.
+    Write-Step "Computing local resource limits"
+    & go run ./cmd/limits render
+    if ($LASTEXITCODE -ne 0) { throw "cmd/limits render failed; edit config/local-limits.yaml or raise host.max_total_*" }
+}
+
 function Start-Stack {
     Write-Step "Bringing up docker compose infra"
-    docker compose -f deploy/docker-compose.yml up -d
+    docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.override.yml up -d
     if ($LASTEXITCODE -ne 0) { throw "docker compose up failed" }
 
     Write-Sub "Waiting for Postgres + Redis to report healthy (up to 45s)..."
@@ -349,6 +363,7 @@ if (-not $composeRunning) {
     Write-Sub "Compose stack already up (services: $($composeRunning -join ', ')) -- skipping compose port check"
 }
 
+Render-Limits
 Start-Stack
 Apply-Migrations
 Generate-Keys

@@ -1349,6 +1349,33 @@ make loadtest     # starts the attack + serves the showcase page at :8090
 
 > `config/keys.yaml` contains real key material and **must be gitignored**. `make keys` regenerates it locally; it is never committed.
 
+### Local resource limits
+
+`config/local-limits.yaml` is the single source of truth for per-service CPU and memory caps on the local stack. `cmd/limits` reads it, detects host capacity via gopsutil, validates the totals fit, and renders two overlay files:
+
+- `deploy/docker-compose.override.yml` — pins each compose service's `deploy.resources.limits.{cpus,memory}`. Honored by `docker compose` in non-swarm mode since v2.x.
+- `deploy/k8s/values-local.yaml` — pins each Helm deployment's `resources.requests`/`limits` and mirrors `worker.max_replicas` into `keda.worker.maxReplicas`. Use as `helm install ... -f values.yaml -f values-local.yaml`.
+
+Both generated files are gitignored. `scripts/local-setup.{ps1,sh}` invoke `go run ./cmd/limits render` before `docker compose up` and pass the override file via a second `-f`; an over-budget config fails fast with the largest contributors listed:
+
+```text
+validate: config exceeds host budget
+  total CPU:    5.00 vs cap 2.00 (host has 24 logical CPUs)
+  total memory: 3712 MB vs cap 1024 MB (host has 32674 MB)
+  largest contributors (cpu*replicas, memory*replicas):
+    worker       cpu=4.00 mem=3200 MB replicas=4
+    api          cpu=1.00 mem=512 MB replicas=2
+  reduce services.<name>.{cpu,memory_mb,max_replicas} or raise host.max_total_*
+```
+
+Host caps default to `auto`, which uses 80% of detected capacity (CPU + RAM) — headroom for the OS, browser, and IDE. Override either by setting an integer in `host.max_total_*`.
+
+`cmd/limits` subcommands:
+
+- `detect [--json]` — print host CPU + RAM.
+- `validate` — read config, check totals; exit 0 OK, 1 over-budget, 2 config error.
+- `render` — validate then write both overlay files.
+
 ---
 
 ## 14. Configuration

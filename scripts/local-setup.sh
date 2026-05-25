@@ -189,9 +189,20 @@ install_optional_deps() {
     fi
 }
 
+render_limits() {
+    # cmd/limits validates that config/local-limits.yaml fits the host's
+    # detected capacity, then writes deploy/docker-compose.override.yml
+    # (and deploy/k8s/values-local.yaml for the optional k8s walkthrough).
+    # Failure here means the host can't accommodate the requested limits;
+    # the error message lists the largest contributors so the user knows
+    # what to shrink in config/local-limits.yaml.
+    step "Computing local resource limits"
+    go run ./cmd/limits render
+}
+
 start_stack() {
     step "Bringing up docker compose infra"
-    docker compose -f deploy/docker-compose.yml up -d
+    docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.override.yml up -d
     sub "Waiting for Postgres + Redis to report healthy (up to 45s)..."
     local deadline=$(( $(date +%s) + 45 ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -316,6 +327,7 @@ else
     sub "Compose stack already up (services: $compose_running) -- skipping compose port check"
 fi
 
+render_limits
 start_stack
 apply_migrations
 generate_keys

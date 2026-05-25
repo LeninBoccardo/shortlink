@@ -1,0 +1,33 @@
+# Local-stack resource limits.
+#
+# `cmd/limits` reads this file, validates the totals fit your host, and
+# renders overlay files for both compose (deploy/docker-compose.override.yml)
+# and helm (deploy/k8s/values-local.yaml). Edit the values then re-run
+# `scripts/local-setup` to apply.
+#
+# Subcommands:
+#   go run ./cmd/limits detect     # print host CPU/RAM
+#   go run ./cmd/limits validate   # check this config fits
+#   go run ./cmd/limits render     # write the overlay files
+
+host:
+  # "auto" detects from the host (gopsutil) and uses 80% of capacity as the
+  # ceiling, leaving headroom for the OS / browser / IDE / other dev tools.
+  # To clamp manually, set integers (e.g. max_total_cpus: 4).
+  max_total_cpus: auto
+  max_total_memory_mb: auto
+
+services:
+  # ShortLink host binaries. max_replicas only matters under k8s today
+  # (Phase 4 will containerize them locally and start respecting it there too).
+  api:       { cpu: 0.5, memory_mb: 256, max_replicas: 2 }
+  worker:    { cpu: 1.0, memory_mb: 512, max_replicas: 4 }
+  observer:  { cpu: 0.25, memory_mb: 128, max_replicas: 1 }
+
+  # Compose infra. max_replicas not applicable (singletons in compose).
+  postgres:   { cpu: 1.0, memory_mb: 512 }
+  redis:      { cpu: 0.5, memory_mb: 256 }
+  minio:      { cpu: 0.5, memory_mb: 256 }
+  pgbouncer:  { cpu: 0.25, memory_mb: 128 }
+  prometheus: { cpu: 0.25, memory_mb: 256 }
+  grafana:    { cpu: 0.25, memory_mb: 256 }

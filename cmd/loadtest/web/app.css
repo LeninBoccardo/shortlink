@@ -296,3 +296,68 @@ html, body {
   gap: 4px;
 }
 .test-steps li { line-height: 1.45; }
+
+/* Scaling panel (Phase 3) — per-service resource cards.
+   Auto-fill grid sized for laptop screens; each card shows CPU + memory
+   bars filled to (current / allocated) with warm/hot thresholds at 50/80 %. */
+
+.scaling-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+  padding: 12px;
+}
+.scaling-grid > .empty { color: var(--text-dim); padding: 16px; text-align: center; grid-column: 1 / -1; }
+
+.scaling-card {
+  background: var(--bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.scaling-head { display: flex; align-items: baseline; gap: 8px; }
+.scaling-head strong { color: var(--text); font-size: 13px; }
+.scaling-source {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid var(--panel-border);
+  border-radius: 3px;
+}
+.scaling-card[data-source="host"] .scaling-source { color: var(--accent); border-color: var(--accent); }
+.scaling-card[data-source="container"] .scaling-source { color: var(--text-dim); }
+
+.scaling-metric { display: flex; flex-direction: column; gap: 4px; }
+.scaling-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+}
+.scaling-num { color: var(--text); font-family: var(--mono); font-size: 12px; text-transform: none; letter-spacing: 0; }
+.scaling-bar {
+  height: 6px;
+  background: rgba(110, 118, 129, 0.18);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.scaling-bar-fill {
+  height: 100%;
+  background: var(--green);
+  transition: width 0.4s ease;
+  width: 0%;
+}
+.scaling-bar-fill.warm { background: var(--yellow); }
+.scaling-bar-fill.hot  { background: var(--red); }
+.scaling-sub { font-family: var(--mono); font-size: 10px; color: var(--grey); }

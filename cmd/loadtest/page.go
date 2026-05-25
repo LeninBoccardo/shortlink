@@ -114,16 +114,24 @@ func buildCSP(html []byte, observerURL, grafanaURL string) (string, error) {
 }
 
 // routes returns an http.Handler that serves the rendered index at /, the
-// embedded web/ assets, and -- when a runner is passed -- the test-console
-// /tests/* endpoints. The /tests/* routes must be registered BEFORE the "/"
-// catch-all or http.ServeMux would shadow them with the asset handler.
-func (p *pageServer) routes(testRunner *runner) http.Handler {
+// embedded web/ assets, the test-console /tests/* endpoints, and the Phase 3
+// scaling panel's /api/scaling-services + /proxy/prom/* routes. All specific
+// routes must be registered BEFORE the "/" catch-all or http.ServeMux would
+// shadow them with the asset handler.
+func (p *pageServer) routes(testRunner *runner, scaling *scalingCatalog, prometheusURL string) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 	if testRunner != nil {
 		testRunner.attachRoutes(mux)
+	}
+	if scaling != nil {
+		mux.HandleFunc("/api/scaling-services", scaling.servicesHandler)
+		mux.HandleFunc("/api/scaling-stats", scaling.statsHandler)
+		// Same-origin proxy for the page to query Prometheus without CORS.
+		// Only /query and /query_range are allowed; see promProxy.
+		mux.HandleFunc("/proxy/prom/", promProxy(prometheusURL))
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Headers shared by both the templated index and the static-asset

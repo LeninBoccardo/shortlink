@@ -1376,6 +1376,22 @@ Host caps default to `auto`, which uses 80% of detected capacity (CPU + RAM) —
 - `validate` — read config, check totals; exit 0 OK, 1 over-budget, 2 config error.
 - `render` — validate then write both overlay files.
 
+### Scaling panel
+
+The loadtest binary's showcase page (`:8090`) has a "Scaling & resources" section below the Grafana 2×2 grid. Cards show every service from `config/local-limits.yaml` with two metric bars per card: CPU (current vs allocated, warm > 50 %, hot > 80 %) and memory (current RSS vs allocated cap).
+
+Data sources are selected per service kind:
+
+- **Host binaries** (api, worker, observer) — `process_cpu_seconds_total` and `process_resident_memory_bytes` from each binary's `/metrics`, queried via Prometheus.
+- **Compose containers** (postgres, redis, minio, ...) — `docker stats --no-stream --format "{{json .}}"`, shelled from the loadtest binary. cAdvisor was considered but doesn't enumerate containers reliably under Docker Desktop (overlay layer-id mismatch); `docker stats` is the cross-platform fallback and needs no extra container.
+
+The loadtest binary exposes two endpoints for the page:
+
+- `GET /api/scaling-services` — static catalog (rendered once at page load).
+- `GET /api/scaling-stats` — live values, polled every ~5 s; per-service errors are surfaced in an `error` field rather than failing the whole row.
+
+`/proxy/prom/{query,query_range}` is also wired for same-origin Prometheus queries from the frontend, though the scaling panel itself uses the server-side `/api/scaling-stats` collector.
+
 ---
 
 ## 14. Configuration

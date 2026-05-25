@@ -26,6 +26,7 @@ const shutdownGrace = 5 * time.Second
 
 type runConfig struct {
 	keysPath      string
+	limitsPath    string
 	target        string
 	duration      time.Duration
 	observerURL   string
@@ -47,6 +48,7 @@ func main() {
 func parseFlags() runConfig {
 	var cfg runConfig
 	flag.StringVar(&cfg.keysPath, "keys", "config/keys.yaml", "path to keys.yaml")
+	flag.StringVar(&cfg.limitsPath, "limits", "config/local-limits.yaml", "path to local-limits.yaml (scaling panel source)")
 	flag.StringVar(&cfg.target, "target", "http://localhost:8080", "API gateway base URL")
 	flag.DurationVar(&cfg.duration, "duration", 60*time.Second, "attack duration")
 	flag.StringVar(&cfg.observerURL, "observer", "http://localhost:9090", "observer hub URL")
@@ -103,9 +105,18 @@ func run(cfg runConfig) error {
 	}
 	pageBase := fmt.Sprintf("http://localhost:%d", cfg.pagePort)
 	tests := newRunner(cfg, keys, cfg.prometheusURL, pageBase)
+	// Phase 3: load the scaling catalog from local-limits.yaml. A missing
+	// file degrades to "no scaling panel" rather than aborting, so a clone
+	// without the limits config (and no `cmd/limits render` run) still
+	// boots the rest of the page.
+	scaling, err := loadScalingCatalog(cfg.limitsPath, cfg.prometheusURL)
+	if err != nil {
+		log.Warn("scaling panel disabled", "error", err)
+		scaling = nil
+	}
 	pageSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.pagePort),
-		Handler:           page.routes(tests),
+		Handler:           page.routes(tests, scaling, cfg.prometheusURL),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

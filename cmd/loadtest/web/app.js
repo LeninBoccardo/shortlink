@@ -754,5 +754,115 @@
 
   loadCatalog();
 
+  // ---------- scaling panel ------------------------------------------------
+  //
+  // Cards list every service in config/local-limits.yaml. CPU + memory usage
+  // come from Prometheus via a same-origin /proxy/prom proxy (no CORS).
+  // Allocated values come from the catalog the loadtest binary builds on
+  // startup. Refreshed every 5 s.
+
+  var scalingGrid = document.getElementById("scaling-grid");
+  var scalingCatalog = null;
+  var SCALING_REFRESH_MS = 5000;
+
+  function loadScalingCatalog() {
+    if (!scalingGrid) return;
+    fetch("/api/scaling-services")
+      .then(function (r) { return r.ok ? r.json() : Promise.reject("HTTP " + r.status); })
+      .then(function (data) {
+        scalingCatalog = (data && data.services) || [];
+        if (scalingCatalog.length === 0) {
+          scalingGrid.innerHTML = '<div class="empty">No services configured.</div>';
+          return;
+        }
+        renderScalingCatalog();
+        refreshScaling();
+        setInterval(refreshScaling, SCALING_REFRESH_MS);
+      })
+      .catch(function (err) {
+        scalingGrid.innerHTML = '<div class="empty">Scaling panel unavailable (' + escapeHTML(String(err)) + ')</div>';
+      });
+  }
+
+  function renderScalingCatalog() {
+    scalingGrid.innerHTML = "";
+    scalingCatalog.forEach(function (svc) {
+      var card = document.createElement("div");
+      card.className = "scaling-card";
+      card.id = "scaling-card-" + svc.name;
+      card.dataset.source = svc.source;
+      card.innerHTML =
+        '<div class="scaling-head">' +
+          '<strong>' + escapeHTML(svc.name) + '</strong>' +
+          '<span class="scaling-source">' + escapeHTML(svc.source) + '</span>' +
+        '</div>' +
+        '<div class="scaling-metric">' +
+          '<div class="scaling-label">CPU <span class="scaling-num" data-field="cpu">—</span></div>' +
+          '<div class="scaling-bar"><div class="scaling-bar-fill" data-field="cpu-bar" style="width:0%"></div></div>' +
+          '<div class="scaling-sub">allocated ' + formatCPU(svc.alloc_cpu) + '</div>' +
+        '</div>' +
+        '<div class="scaling-metric">' +
+          '<div class="scaling-label">Memory <span class="scaling-num" data-field="mem">—</span></div>' +
+          '<div class="scaling-bar"><div class="scaling-bar-fill" data-field="mem-bar" style="width:0%"></div></div>' +
+          '<div class="scaling-sub">allocated ' + svc.alloc_memory_mb + ' MB</div>' +
+        '</div>';
+      scalingGrid.appendChild(card);
+    });
+  }
+
+  function refreshScaling() {
+    if (!scalingCatalog) return;
+    // Single round-trip: loadtest server-side queries Prometheus for host
+    // binaries and shells `docker stats` for compose containers, returns one
+    // combined payload. Per-service errors are reported in the row's `error`
+    // field; we render "—" in that case.
+    fetch("/api/scaling-stats")
+      .then(function (r) { return r.ok ? r.json() : Promise.reject("HTTP " + r.status); })
+      .then(function (data) {
+        var stats = (data && data.stats) || [];
+        var byName = {};
+        stats.forEach(function (s) { byName[s.name] = s; });
+        scalingCatalog.forEach(function (svc) {
+          var s = byName[svc.name];
+          if (!s || s.error) {
+            updateScalingMetric(svc.name, "cpu", null, svc.alloc_cpu, formatCPU);
+            updateScalingMetric(svc.name, "mem", null, svc.alloc_memory_mb, function (v) { return v == null ? "—" : v.toFixed(0) + " MB"; });
+            return;
+          }
+          updateScalingMetric(svc.name, "cpu", s.cur_cpu_cores, svc.alloc_cpu, formatCPU);
+          var mb = (s.cur_memory_bytes || 0) / 1024 / 1024;
+          updateScalingMetric(svc.name, "mem", mb, svc.alloc_memory_mb, function (v) { return v.toFixed(0) + " MB"; });
+        });
+      })
+      .catch(function () { /* leave previous values in place on transient failure */ });
+  }
+
+  function updateScalingMetric(name, field, value, allocated, formatFn) {
+    var card = document.getElementById("scaling-card-" + name);
+    if (!card) return;
+    var numEl = card.querySelector('[data-field="' + field + '"]');
+    var barEl = card.querySelector('[data-field="' + field + '-bar"]');
+    if (numEl) numEl.textContent = formatFn(value);
+    if (!barEl) return;
+    if (value == null || allocated <= 0) {
+      barEl.style.width = "0%";
+      barEl.classList.remove("hot", "warm");
+      return;
+    }
+    var pct = Math.min(100, (value / allocated) * 100);
+    barEl.style.width = pct.toFixed(1) + "%";
+    barEl.classList.toggle("hot", pct > 80);
+    barEl.classList.toggle("warm", pct > 50 && pct <= 80);
+  }
+
+  function formatCPU(cores) {
+    if (cores == null || isNaN(cores)) return "—";
+    if (cores < 0.01) return "0 m";
+    if (cores < 1) return Math.round(cores * 1000) + " m";
+    return cores.toFixed(2) + " cores";
+  }
+
+  loadScalingCatalog();
+
   connect();
 })();

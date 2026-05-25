@@ -12,6 +12,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -206,6 +207,10 @@ func (e *Emitter) send(ev Event) {
 		// Observer unreachable. Expected when the observer isn't running yet.
 		return
 	}
+	// Drain the body so the underlying TCP conn returns to the keep-alive
+	// pool. Without this, Go's http.Transport refuses to reuse the conn and
+	// each event burns a fresh socket+TLS handshake.
+	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 }
 

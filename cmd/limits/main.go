@@ -22,6 +22,9 @@ Subcommands:
                     1 over-budget, 2 config error.
   render            Validate then write deploy/docker-compose.override.yml
                     and deploy/k8s/values-local.yaml from the config.
+  get <svc> <field> Print one field of one service (cpu / memory_mb /
+                    max_replicas). Used by the setup scripts in
+                    container mode to size docker-run --memory/--cpus.
   help              This message.
 
 Global flags:
@@ -49,10 +52,43 @@ func main() {
 		runValidate(*configPath)
 	case "render":
 		runRender(*configPath)
+	case "get":
+		runGet(*configPath, fs.Args())
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand: %s\n\n%s", cmd, usage)
+		os.Exit(2)
+	}
+}
+
+// runGet handles `cmd/limits get <svc> <field>`. Output is a single number
+// suitable for shell capture: setup scripts use it to size docker run flags
+// per service in container mode.
+func runGet(path string, args []string) {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: cmd/limits get <service> <cpu|memory_mb|max_replicas>")
+		os.Exit(2)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		os.Exit(2)
+	}
+	svc, ok := cfg.Services[args[0]]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "no such service: %s\n", args[0])
+		os.Exit(2)
+	}
+	switch args[1] {
+	case "cpu":
+		fmt.Println(trimZero(svc.CPU))
+	case "memory_mb":
+		fmt.Println(svc.MemoryMB)
+	case "max_replicas":
+		fmt.Println(svc.MaxReplicas)
+	default:
+		fmt.Fprintf(os.Stderr, "no such field: %s\n", args[1])
 		os.Exit(2)
 	}
 }

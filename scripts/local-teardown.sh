@@ -22,6 +22,7 @@ REPO_ROOT="$(dirname -- "$SCRIPT_DIR")"
 cd "$REPO_ROOT"
 
 PID_FILE="$REPO_ROOT/.shortlink-pids"
+CONTAINERS_FILE="$REPO_ROOT/.shortlink-containers"
 LOG_DIR="$REPO_ROOT/logs"
 
 if [ -t 1 ]; then CYAN='\033[36m'; GREEN='\033[32m'; DIM='\033[2m'; RESET='\033[0m'; else CYAN=''; GREEN=''; DIM=''; RESET=''; fi
@@ -52,6 +53,21 @@ if [ -f "$PID_FILE" ]; then
     rm -f "$PID_FILE"
 else
     sub "No .shortlink-pids file -- nothing to kill"
+fi
+
+# Container-mode binaries from setup.sh --container-mode. The file lists
+# "name container-name" per line; stop+rm each so a follow-up setup run
+# isn't blocked by a name collision.
+if [ -f "$CONTAINERS_FILE" ]; then
+    step "Stopping shortlink containers"
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        name=$(echo "$line" | awk '{print $1}')
+        cname=$(echo "$line" | awk '{print $2}')
+        sub "$name -> docker rm -f $cname"
+        docker rm -f "$cname" >/dev/null 2>&1 || true
+    done < "$CONTAINERS_FILE"
+    rm -f "$CONTAINERS_FILE"
 fi
 
 step "Bringing the docker compose stack down"

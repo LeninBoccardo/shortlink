@@ -1392,6 +1392,24 @@ The loadtest binary exposes two endpoints for the page:
 
 `/proxy/prom/{query,query_range}` is also wired for same-origin Prometheus queries from the frontend, though the scaling panel itself uses the server-side `/api/scaling-stats` collector.
 
+### Container mode
+
+By default the setup scripts run api/worker/observer as host processes via `go build` + background launch. `-ContainerMode` / `--container-mode` instead wraps each of those three binaries in `docker run --memory <m>M --cpus <c>` on the `shortlink_default` compose network, with caps pulled from `config/local-limits.yaml` via `cmd/limits get <svc> <cpu|memory_mb>`. The Dockerfile is the same one `make images` builds for k8s (distroless-nonroot, static binary, `shortlink-<svc>:dev`).
+
+Loadtest stays on the host in both modes — it serves the showcase page and shells `docker stats` for the Phase 3 scaling panel; running it inside a container would need a docker-socket mount that's unreliable on Docker Desktop.
+
+Container env points each binary at the compose-network service names:
+
+- `DATABASE_URL=postgres://shortlink:shortlink@pgbouncer:6432/shortlink?sslmode=disable`
+- `REDIS_URL=redis://redis:6379`
+- `MINIO_ENDPOINT=minio:9000`
+- `OBSERVER_URL=http://shortlink-observer:9090` (own container, no compose alias)
+- `SSRF_ALLOWLIST=host.docker.internal,127.0.0.1,localhost` (worker reaches the loadtest sink on the host's `:8091`)
+
+Ports stay published to the same host numbers (`-p 8080:8080`, etc.) so Prometheus's `host.docker.internal:port` scrape and the user's browser keep working unchanged. Teardown reads `.shortlink-containers` (parallel to `.shortlink-pids`) and `docker rm -f`s each container.
+
+Use container mode to validate behaviour under the per-service caps — see how `cpu: 1.0, memory_mb: 512` for the worker actually affects QR generation throughput, OOM-kill risk, etc. Default (host process) mode stays faster for iteration.
+
 ---
 
 ## 14. Configuration

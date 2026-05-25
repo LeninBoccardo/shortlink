@@ -18,8 +18,9 @@ $ErrorActionPreference = "Continue"   # never bail mid-teardown
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
-$PidFile = Join-Path $RepoRoot ".shortlink-pids"
-$LogDir  = Join-Path $RepoRoot "logs"
+$PidFile        = Join-Path $RepoRoot ".shortlink-pids"
+$ContainersFile = Join-Path $RepoRoot ".shortlink-containers"
+$LogDir         = Join-Path $RepoRoot "logs"
 
 Write-Host "==> Stopping host binaries" -ForegroundColor Cyan
 if (Test-Path $PidFile) {
@@ -54,6 +55,24 @@ if (Test-Path $PidFile) {
     Remove-Item $PidFile -ErrorAction SilentlyContinue
 } else {
     Write-Host "    No .shortlink-pids file -- nothing to kill" -ForegroundColor DarkGray
+}
+
+# Container-mode binaries from setup.ps1 -ContainerMode. The file lists
+# "name container-name" per line; stop+rm each so a follow-up setup run
+# isn't blocked by a name collision.
+if (Test-Path $ContainersFile) {
+    Write-Host ""
+    Write-Host "==> Stopping shortlink containers" -ForegroundColor Cyan
+    Get-Content $ContainersFile | ForEach-Object {
+        if (-not $_) { return }
+        $parts = $_ -split "\s+"
+        if ($parts.Count -lt 2) { return }
+        $name = $parts[0]
+        $cname = $parts[1]
+        Write-Host "    $name -> docker rm -f $cname" -ForegroundColor DarkGray
+        docker rm -f $cname 2>&1 | Out-Null
+    }
+    Remove-Item $ContainersFile -ErrorAction SilentlyContinue
 }
 
 Write-Host ""

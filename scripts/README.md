@@ -78,6 +78,7 @@ containers. Use it as your "fresh state" button during development.
 | `-WithK8s` / `--with-k8s` | also install kind + helm + kubectl                   |
 | `-NoOpen`  / `--no-open`  | skip the browser-open step (useful in CI / SSH)      |
 | `-SkipDeps`/ `--skip-deps`| trust the host has every dep; skip checks + installs |
+| `-ContainerMode` / `--container-mode` | wrap api/worker/observer in `docker run --memory --cpus` on the compose network; loadtest stays on the host. Validates behaviour under the per-service caps from `config/local-limits.yaml`. |
 
 **Teardown**:
 

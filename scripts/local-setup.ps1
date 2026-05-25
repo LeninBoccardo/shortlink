@@ -19,18 +19,25 @@
 # to stop everything cleanly.
 #
 # Flags:
-#   -WithK8s   also install kind + helm (for the optional §11 walkthrough)
-#   -NoOpen    skip the browser-open step (useful in CI / SSH sessions)
-#   -SkipDeps  trust the host has everything; skip prereq + install checks
+#   -WithK8s        also install kind + helm (for the optional §11 walkthrough)
+#   -NoOpen         skip the browser-open step (useful in CI / SSH sessions)
+#   -SkipDeps       trust the host has everything; skip prereq + install checks
+#   -ContainerMode  wrap api/worker/observer in `docker run --memory --cpus`
+#                   on the compose network instead of running them as host
+#                   processes. Loadtest stays on the host (it serves the
+#                   showcase page and shells `docker stats`). Use to validate
+#                   behaviour under the resource caps from local-limits.yaml.
 #
 # Run from the repo root:
 #   .\scripts\local-setup.ps1
 #   .\scripts\local-setup.ps1 -WithK8s
+#   .\scripts\local-setup.ps1 -ContainerMode
 [CmdletBinding()]
 param(
     [switch]$WithK8s,
     [switch]$NoOpen,
-    [switch]$SkipDeps
+    [switch]$SkipDeps,
+    [switch]$ContainerMode
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,8 +48,9 @@ $ProgressPreference    = "SilentlyContinue"   # quieter Invoke-WebRequest
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $RepoRoot
 
-$PidFile = Join-Path $RepoRoot ".shortlink-pids"
-$LogDir  = Join-Path $RepoRoot "logs"
+$PidFile        = Join-Path $RepoRoot ".shortlink-pids"
+$ContainersFile = Join-Path $RepoRoot ".shortlink-containers"
+$LogDir         = Join-Path $RepoRoot "logs"
 
 # Ports the script will refuse to clobber. If any of these are taken the
 # script aborts with a clear "PID X holds port Y" message -- killing other
@@ -256,6 +264,52 @@ function Build-Binaries {
     if ($LASTEXITCODE -ne 0) { throw "go build failed" }
 }
 
+function Build-ShortlinkImages {
+    # Only needed in container mode. Same Dockerfile used by `make images` /
+    # the k8s walkthrough -- distroless-nonroot, static binary, image tag
+    # shortlink-<svc>:dev. We always rebuild so a code change between runs
+    # actually lands; layer caching makes a no-op rebuild quick.
+    Write-Step "Building shortlink-<svc>:dev images for container mode"
+    foreach ($svc in @("api", "worker", "observer")) {
+        Write-Sub "docker build --build-arg BINARY=$svc -t shortlink-${svc}:dev ."
+        docker build --build-arg BINARY=$svc -t "shortlink-${svc}:dev" .
+        if ($LASTEXITCODE -ne 0) { throw "docker build for $svc failed" }
+    }
+}
+
+function Start-Container($name, $port) {
+    # Resource caps come from config/local-limits.yaml via cmd/limits get
+    # (bin/limits.exe was built by Build-Binaries before we got here).
+    $cpu = (& (Join-Path $RepoRoot "bin\limits.exe") get $name cpu).Trim()
+    $mem = (& (Join-Path $RepoRoot "bin\limits.exe") get $name memory_mb).Trim()
+
+    $containerName = "shortlink-$name"
+    # Idempotent re-runs: remove any stale container with this name first.
+    docker rm -f $containerName 2>&1 | Out-Null
+
+    # Network-internal addresses for the compose-deployed services. pgbouncer,
+    # redis, minio resolve via compose DNS. observer is one of OUR containers
+    # so we address it by the explicit container name (no compose alias).
+    # SSRF_ALLOWLIST must include host.docker.internal so worker can deliver
+    # webhooks to the loadtest sink running on the host (:8091).
+    $envArgs = @(
+        "-e", "DATABASE_URL=postgres://shortlink:shortlink@pgbouncer:6432/shortlink?sslmode=disable",
+        "-e", "REDIS_URL=redis://redis:6379",
+        "-e", "MINIO_ENDPOINT=minio:9000",
+        "-e", "OBSERVER_URL=http://shortlink-observer:9090",
+        "-e", "SSRF_ALLOWLIST=host.docker.internal,127.0.0.1,localhost"
+    )
+
+    docker run -d --name $containerName --network shortlink_default `
+        --memory "${mem}M" --cpus $cpu `
+        -p "${port}:${port}" `
+        @envArgs `
+        "shortlink-${name}:dev" 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "docker run for $name failed" }
+    Add-Content -Path $ContainersFile -Value "$name $containerName"
+    Write-Sub "$name -> $containerName (cpu=$cpu memory=${mem}M, port=$port)"
+}
+
 function Start-HostBinary($name, $exe, $argList, $envVars) {
     $logOut = Join-Path $LogDir "$name.log"
     $logErr = Join-Path $LogDir "$name.err"
@@ -309,24 +363,40 @@ function Start-Binaries {
     New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
     if (Test-Path $PidFile) { Remove-Item $PidFile }
     New-Item -ItemType File -Path $PidFile | Out-Null
+    if (Test-Path $ContainersFile) { Remove-Item $ContainersFile }
+    if ($ContainerMode) { New-Item -ItemType File -Path $ContainersFile | Out-Null }
 
     $apiExe      = Join-Path $RepoRoot "bin\api.exe"
     $workerExe   = Join-Path $RepoRoot "bin\worker.exe"
     $observerExe = Join-Path $RepoRoot "bin\observer.exe"
     $loadtestExe = Join-Path $RepoRoot "bin\loadtest.exe"
 
-    $sharedEnv = @{
-        SSRF_ALLOWLIST = "127.0.0.1,localhost,host.docker.internal"
+    if ($ContainerMode) {
+        # api/worker/observer run inside the compose network with caps from
+        # local-limits.yaml. Loadtest continues on the host (it serves the
+        # showcase page and shells `docker stats` for the scaling panel).
+        Start-Container "observer" 9090
+        Wait-ForHealthz "observer" "http://localhost:9090/healthz"
+
+        Start-Container "worker" 8081
+        Wait-ForHealthz "worker"   "http://localhost:8081/healthz"
+
+        Start-Container "api" 8080
+        Wait-ForHealthz "api"      "http://localhost:8080/healthz"
+    } else {
+        $sharedEnv = @{
+            SSRF_ALLOWLIST = "127.0.0.1,localhost,host.docker.internal"
+        }
+
+        Start-HostBinary "observer" $observerExe @() @{}
+        Wait-ForHealthz "observer" "http://localhost:9090/healthz"
+
+        Start-HostBinary "worker"   $workerExe   @() $sharedEnv
+        Wait-ForHealthz "worker"   "http://localhost:8081/healthz"
+
+        Start-HostBinary "api"      $apiExe      @() $sharedEnv
+        Wait-ForHealthz "api"      "http://localhost:8080/healthz"
     }
-
-    Start-HostBinary "observer" $observerExe @() @{}
-    Wait-ForHealthz "observer" "http://localhost:9090/healthz"
-
-    Start-HostBinary "worker"   $workerExe   @() $sharedEnv
-    Wait-ForHealthz "worker"   "http://localhost:8081/healthz"
-
-    Start-HostBinary "api"      $apiExe      @() $sharedEnv
-    Wait-ForHealthz "api"      "http://localhost:8080/healthz"
 
     # loadtest with a long duration so the showcase page stays up after the
     # attack ends; user can Ctrl-C via teardown.
@@ -368,6 +438,7 @@ Start-Stack
 Apply-Migrations
 Generate-Keys
 Build-Binaries
+if ($ContainerMode) { Build-ShortlinkImages }
 Start-Binaries
 Open-Showcase
 

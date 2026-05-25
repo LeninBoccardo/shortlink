@@ -5,24 +5,29 @@
 # same end state. See that script's header for the full description.
 #
 # Flags:
-#   --with-k8s   also install kind + helm (for the optional §11 walkthrough)
-#   --no-open    skip the browser-open step (useful in CI / SSH)
-#   --skip-deps  trust the host has everything; skip prereq + install checks
+#   --with-k8s        also install kind + helm (for the optional §11 walkthrough)
+#   --no-open         skip the browser-open step (useful in CI / SSH)
+#   --skip-deps       trust the host has everything; skip prereq + install checks
+#   --container-mode  wrap api/worker/observer in `docker run --memory --cpus`
+#                     on the compose network; loadtest stays on the host
 #
 # Run from the repo root:
 #   ./scripts/local-setup.sh
 #   ./scripts/local-setup.sh --with-k8s
+#   ./scripts/local-setup.sh --container-mode
 
 set -euo pipefail
 
 WITH_K8S=0
 NO_OPEN=0
 SKIP_DEPS=0
+CONTAINER_MODE=0
 for arg in "$@"; do
     case "$arg" in
-        --with-k8s)  WITH_K8S=1 ;;
-        --no-open)   NO_OPEN=1 ;;
-        --skip-deps) SKIP_DEPS=1 ;;
+        --with-k8s)       WITH_K8S=1 ;;
+        --no-open)        NO_OPEN=1 ;;
+        --skip-deps)      SKIP_DEPS=1 ;;
+        --container-mode) CONTAINER_MODE=1 ;;
         -h|--help)
             sed -n '2,16p' "$0"
             exit 0 ;;
@@ -39,6 +44,7 @@ REPO_ROOT="$(dirname -- "$SCRIPT_DIR")"
 cd "$REPO_ROOT"
 
 PID_FILE="$REPO_ROOT/.shortlink-pids"
+CONTAINERS_FILE="$REPO_ROOT/.shortlink-containers"
 LOG_DIR="$REPO_ROOT/logs"
 
 # Ports the script refuses to clobber if held by something else. Same set as
@@ -239,6 +245,41 @@ build_binaries() {
     go build -o bin/ ./cmd/...
 }
 
+build_shortlink_images() {
+    # Only needed in container mode. Same Dockerfile used by `make images` /
+    # the k8s walkthrough -- distroless-nonroot, tagged shortlink-<svc>:dev.
+    step "Building shortlink-<svc>:dev images for container mode"
+    for svc in api worker observer; do
+        sub "docker build --build-arg BINARY=$svc -t shortlink-${svc}:dev ."
+        docker build --build-arg BINARY="$svc" -t "shortlink-${svc}:dev" .
+    done
+}
+
+start_container() {
+    local name=$1 port=$2
+    local cpu mem container_name
+    cpu=$("$REPO_ROOT/bin/limits" get "$name" cpu)
+    mem=$("$REPO_ROOT/bin/limits" get "$name" memory_mb)
+    container_name="shortlink-${name}"
+    # Idempotent re-runs: remove any stale container with this name first.
+    docker rm -f "$container_name" >/dev/null 2>&1 || true
+    # SSRF_ALLOWLIST must include host.docker.internal so worker can deliver
+    # webhooks to the loadtest sink running on the host (:8091). pgbouncer/
+    # redis/minio resolve via compose DNS; observer is one of our containers
+    # so address it by container name.
+    docker run -d --name "$container_name" --network shortlink_default \
+        --memory "${mem}M" --cpus "$cpu" \
+        -p "${port}:${port}" \
+        -e "DATABASE_URL=postgres://shortlink:shortlink@pgbouncer:6432/shortlink?sslmode=disable" \
+        -e "REDIS_URL=redis://redis:6379" \
+        -e "MINIO_ENDPOINT=minio:9000" \
+        -e "OBSERVER_URL=http://shortlink-observer:9090" \
+        -e "SSRF_ALLOWLIST=host.docker.internal,127.0.0.1,localhost" \
+        "shortlink-${name}:dev" >/dev/null
+    echo "$name $container_name" >> "$CONTAINERS_FILE"
+    sub "$name -> $container_name (cpu=$cpu memory=${mem}M, port=$port)"
+}
+
 start_host_binary() {
     local name=$1 exe=$2; shift 2
     local args=("$@")
@@ -271,20 +312,36 @@ start_binaries() {
     step "Launching host binaries"
     mkdir -p "$LOG_DIR"
     : > "$PID_FILE"
+    rm -f "$CONTAINERS_FILE"
 
-    # observer first (no env needed)
-    start_host_binary observer "$REPO_ROOT/bin/observer"
-    wait_for_healthz observer http://localhost:9090/healthz
+    if [ "$CONTAINER_MODE" -eq 1 ]; then
+        : > "$CONTAINERS_FILE"
+        # api/worker/observer run inside the compose network with caps from
+        # local-limits.yaml. Loadtest continues on the host (it serves the
+        # showcase page and shells `docker stats` for the scaling panel).
+        start_container observer 9090
+        wait_for_healthz observer http://localhost:9090/healthz
 
-    # worker + api need the SSRF allowlist so they can reach the loadtest
-    # sink on the host loopback.
-    export SSRF_ALLOWLIST="127.0.0.1,localhost,host.docker.internal"
-    start_host_binary worker "$REPO_ROOT/bin/worker"
-    wait_for_healthz worker http://localhost:8081/healthz
+        start_container worker 8081
+        wait_for_healthz worker http://localhost:8081/healthz
 
-    start_host_binary api "$REPO_ROOT/bin/api"
-    wait_for_healthz api http://localhost:8080/healthz
-    unset SSRF_ALLOWLIST
+        start_container api 8080
+        wait_for_healthz api http://localhost:8080/healthz
+    else
+        # observer first (no env needed)
+        start_host_binary observer "$REPO_ROOT/bin/observer"
+        wait_for_healthz observer http://localhost:9090/healthz
+
+        # worker + api need the SSRF allowlist so they can reach the loadtest
+        # sink on the host loopback.
+        export SSRF_ALLOWLIST="127.0.0.1,localhost,host.docker.internal"
+        start_host_binary worker "$REPO_ROOT/bin/worker"
+        wait_for_healthz worker http://localhost:8081/healthz
+
+        start_host_binary api "$REPO_ROOT/bin/api"
+        wait_for_healthz api http://localhost:8080/healthz
+        unset SSRF_ALLOWLIST
+    fi
 
     # loadtest with a long duration so the showcase stays up after the
     # attack ends; teardown.sh stops it cleanly via the PID file.
@@ -332,6 +389,7 @@ start_stack
 apply_migrations
 generate_keys
 build_binaries
+if [ "$CONTAINER_MODE" -eq 1 ]; then build_shortlink_images; fi
 start_binaries
 open_showcase
 

@@ -172,23 +172,26 @@
   // ---------- key-stats table ---------------------------------------------
   //
   // SPEC §11:
-  //   - Table rows keyed by key_hash (NOT key_hint — two keys could share
-  //     the same last-6).
+  //   - Table rows keyed by key_hint. The server identifies keys internally
+  //     by SHA-256 hash but does NOT broadcast the hash (it's the same value
+  //     stored as the credential record — least-privilege). Hints are 6
+  //     base62 chars; collisions across a portfolio's worth of keys are
+  //     effectively impossible (~62^-6 per pair).
   //   - Red highlight when limit_errors / total_reqs > 0.5.
   //   - Hint shown as "..abc123" (last 6 chars).
   //   - Unlimited tier rendered with a "∞" budget.
   //
-  // We keep a per-hash <tr> cache so the broadcaster's 500ms tick re-uses
+  // We keep a per-hint <tr> cache so the broadcaster's 500ms tick re-uses
   // existing rows and only touches the cells whose text changed. Cheap, no
   // framework, no flicker.
 
-  var rowByHash = Object.create(null);
+  var rowByHint = Object.create(null);
 
   function renderKeyTable(keys) {
     if (!els.keyTbody) return;
     if (!keys.length) {
       // Clear cache so a future reset_stats can rebuild cleanly.
-      rowByHash = Object.create(null);
+      rowByHint = Object.create(null);
       els.keyTbody.innerHTML = '<tr class="empty"><td colspan="8">No keys seen yet.</td></tr>';
       return;
     }
@@ -196,16 +199,18 @@
     if (els.keyTbody.firstElementChild && els.keyTbody.firstElementChild.classList.contains("empty")) {
       els.keyTbody.innerHTML = "";
     }
-    // keys arrive already sorted by key_hash (observer/state.go Snapshot
-    // sorts before shipping); render in that order so row position is stable.
+    // keys arrive sorted server-side (observer/state.go Snapshot sorts by the
+    // internal hash before shipping); render in that order so row position
+    // is stable.
     var seen = Object.create(null);
     for (var i = 0; i < keys.length; i++) {
       var k = keys[i];
-      seen[k.key_hash] = true;
-      var tr = rowByHash[k.key_hash];
+      var hint = k.key_hint || "";
+      seen[hint] = true;
+      var tr = rowByHint[hint];
       if (!tr) {
         tr = buildKeyRow(k);
-        rowByHash[k.key_hash] = tr;
+        rowByHint[hint] = tr;
         els.keyTbody.appendChild(tr);
       } else {
         updateKeyRow(tr, k);
@@ -213,17 +218,17 @@
     }
     // Evict rows for keys the observer no longer reports (e.g. after a
     // reset_stats; or after the observer's idle-key eviction kicked in).
-    Object.keys(rowByHash).forEach(function (hash) {
-      if (!seen[hash]) {
-        els.keyTbody.removeChild(rowByHash[hash]);
-        delete rowByHash[hash];
+    Object.keys(rowByHint).forEach(function (hint) {
+      if (!seen[hint]) {
+        els.keyTbody.removeChild(rowByHint[hint]);
+        delete rowByHint[hint];
       }
     });
   }
 
   function buildKeyRow(k) {
     var tr = document.createElement("tr");
-    tr.dataset.keyHash = k.key_hash;
+    tr.dataset.keyHint = k.key_hint || "";
     // Build all eight cells once; updateKeyRow swaps textContent.
     ["key", "tier", "rl", "reqs", "wh", "lim", "err", "p99"].forEach(function (cls) {
       var td = document.createElement("td");

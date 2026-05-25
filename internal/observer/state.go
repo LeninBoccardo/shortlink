@@ -16,6 +16,12 @@ import (
 )
 
 // LogEntry mirrors SPEC §4.3 — what the browser ring-buffer renders.
+//
+// APIKeyHash / KeyHash are kept server-side (used as the dedup map key in
+// Ingest) but excluded from JSON: they're SHA-256(raw key) — the same value
+// stored in the DB as the credential record — and there's no reason to
+// broadcast them to anyone with the showcase open. The frontend keys on
+// `api_key_hint` / `key_hint` instead.
 type LogEntry struct {
 	ID         string         `json:"id"`
 	Timestamp  time.Time      `json:"ts"`
@@ -23,7 +29,7 @@ type LogEntry struct {
 	Source     string         `json:"source"`
 	Level      string         `json:"level"`
 	Kind       string         `json:"kind"`
-	APIKeyHash string         `json:"api_key_hash,omitempty"`
+	APIKeyHash string         `json:"-"`
 	APIKeyHint string         `json:"api_key_hint,omitempty"`
 	Message    string         `json:"message"`
 	Meta       map[string]any `json:"meta,omitempty"`
@@ -31,7 +37,7 @@ type LogEntry struct {
 
 // KeyStat is the per-API-key counter row in the showcase table.
 type KeyStat struct {
-	KeyHash     string    `json:"key_hash"`
+	KeyHash     string    `json:"-"`
 	KeyHint     string    `json:"key_hint"`
 	Tier        string    `json:"tier"`
 	RateLimit   int       `json:"rate_limit"`

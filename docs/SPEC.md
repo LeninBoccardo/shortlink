@@ -1025,6 +1025,8 @@ Keys are generated once, shown once, never stored in plaintext. Only a SHA-256 h
 4. Injects resolved `api_key_id` and `tier` into the request context.
 5. Updates `last_used_at` — **throttled**: the gateway writes Postgres only if the Redis key `lu:{key_hash}` is absent, then sets it with a `LAST_USED_THROTTLE` TTL (default 5 min). This bounds `last_used_at` writes to at most one per key per window regardless of traffic; the column is eventually consistent within that window, by design.
 
+> **Per-process key cache (post-audit T2.5).** Step 3 is cached in-process for **60 s** per successful lookup (`internal/auth/validator.go`). The gateway can serve >99% of authenticated requests from RAM under steady traffic. **Failed lookups are not cached**, so a brute-force attempt can't flood the cache with junk entries. **Revocation propagation SLA: up to 60 s × number of api pods** — a key revoked in Postgres still authenticates until each pod's cache entry expires. When a revocation surface ships (admin endpoint or pub-sub), it must call `Validator.Invalidate(hash)` to bypass this window. The cache exposes `shortlink_auth_key_cache_total{outcome=hit|miss}` for observability.
+
 ### Webhook signing secret
 
 Webhook payloads are signed with a **dedicated per-key secret** (`whsec_<base62-random>`), stored in the `api_keys` table and shown once at key creation.

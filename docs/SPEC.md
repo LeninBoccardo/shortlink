@@ -86,7 +86,7 @@ The pipeline is **fully asynchronous from the first milestone** — shortening a
 ┌──────────────────────────────────────────────────────────────────────┐
 │  Queue  (in-process channel in M1 → Redis/asynq from M2)             │
 │  • shorten queue   • webhook queue   • dead-letter (archived) set   │
-│  • per-job retry count, backoff   • enqueue dedup (asynq Unique)    │
+│  • per-job retry count, backoff   • enqueue dedup (asynq TaskID)    │
 └────────────┬─────────────────────────────────────────────────────────┘
              │ dequeue
              ▼
@@ -420,7 +420,7 @@ The `short_urls` row is created **once**, by the gateway, before the job is even
 - **Concurrent duplicate delivery** — two workers receive the same `job_id` at once. Both run the claim `UPDATE`; Postgres serializes them, so one writes first and bumps `updated_at`, while the second matches the row (still `processing`) and bumps `updated_at` again. Each gets its own fresh `updated_at` back as its **lease token**.
 - **Crash recovery** — a worker claims a row (`pending`→`processing`) and then dies before finalizing. asynq's recoverer redelivers the task. Because the claim matches `processing` unconditionally, the redelivered job re-claims and completes the abandoned work — there's no `CLAIM_LEASE` window to wait out. This deliberately diverges from a lease-cutoff claim: asynq retries can fire within seconds of a failure, and a cutoff `WHERE updated_at < now()-CLAIM_LEASE` would simply lose those retries.
 
-Safety still rests on the lease token: the finalizing `UPDATE` carries `AND updated_at=$lease`, so if a stalled worker is preempted by a re-claim, its late finalize matches zero rows and is harmlessly discarded. Combined with `asynq.Unique` on enqueue and an asynq task timeout aligned to `CLAIM_LEASE` ([§7](#7-queue-design), [§14](#14-configuration)), duplicate **execution** is possible — two workers can run the same job in parallel — but duplicate **writes** are structurally impossible, so the row only ever transitions once.
+Safety still rests on the lease token: the finalizing `UPDATE` carries `AND updated_at=$lease`, so if a stalled worker is preempted by a re-claim, its late finalize matches zero rows and is harmlessly discarded. Combined with `asynq.TaskID(job_id)` on enqueue (asynq's native dedup primitive — rejects a second enqueue of the same task while one is in-flight) and an asynq task timeout aligned to `CLAIM_LEASE` ([§7](#7-queue-design), [§14](#14-configuration)), duplicate **execution** is possible — two workers can run the same job in parallel — but duplicate **writes** are structurally impossible, so the row only ever transitions once.
 
 #### Permanent failure
 
@@ -459,7 +459,7 @@ On `SIGTERM` (Kubernetes drain):
 3. Drain timeout: `DRAIN_TIMEOUT` (default 30 s).
 4. Emit `pod_stopped`, delete the heartbeat key, exit cleanly.
 
-`terminationGracePeriodSeconds` is set to 40 s, comfortably above the 30 s drain plus the `preStop` delay.
+`terminationGracePeriodSeconds` is set to 60 s, comfortably above the 30 s drain plus the `preStop` delay (matches the Helm chart's `worker-deployment.yaml`, [§12](#12-kubernetes-deployment)).
 
 ---
 
@@ -837,7 +837,7 @@ CREATE INDEX idx_hits_slug ON hits(slug);
 
 ### Postgres
 
-- Connection pool: `pgx/v5/pgxpool`, **sized to expected concurrency** via `PG_POOL_SIZE` — workers ~4, API gateway ~8. Pools are kept small deliberately so total connection count stays bounded as the worker tier scales.
+- Connection pool: `pgx/v5/pgxpool`, **sized to expected concurrency** per-binary via `API_PG_POOL_SIZE` (default 8) and `WORKER_PG_POOL_SIZE` (default 4). Pools are kept small deliberately so total connection count stays bounded as the worker tier scales.
 - At pod scale, all services connect through **PgBouncer** in transaction-pooling mode. PgBouncer multiplexes a small upstream pool (~20 connections) to Postgres, so the number of real Postgres connections is independent of pod count. (Transaction-mode pooling requires care with prepared statements — use pgx's `QueryExecModeExec`, or PgBouncer ≥ 1.21 prepared-statement support.)
 - Query layer: `sqlc` for type-safe generated query code.
 - Migrations: `pressly/goose`, run by `cmd/migrate` — as a one-shot service locally and a Kubernetes Job (Helm pre-upgrade hook) in production ([§12](#12-kubernetes-deployment)).
@@ -850,7 +850,7 @@ Used for several independent purposes:
 | Purpose | Key pattern | TTL |
 |---------|-------------|-----|
 | Task queues (via asynq) | `asynq:{queue}:*` | Managed by asynq |
-| Enqueue dedup (asynq Unique) | `asynq:unique:*` | Job retry lifetime |
+| Enqueue dedup (asynq TaskID) | `asynq:{<queue>}:t:<task_id>` | Job retry lifetime |
 | Rate limit sliding window | `shortlink:rl:{key_hash}` | 60 seconds (auto-expire) |
 | `last_used_at` write throttle | `shortlink:lu:{key_hash}` | `LAST_USED_THROTTLE` (auto-expire) |
 | Pod heartbeat | `shortlink:pod:{pod_id}:alive` | 15 seconds (worker refreshes; observer polls) |
@@ -930,7 +930,7 @@ asynq.Config{
 }
 ```
 
-- **Shorten jobs** are enqueued with `asynq.Unique(ttl)` keyed on `job_id` (deduplicates *enqueue*) and a short `asynq.Timeout` (~2 min, aligned with `CLAIM_LEASE`) so a crashed worker's task is bounded and asynq can redeliver it. The redelivered task unconditionally re-claims the abandoned `processing` row ([§4.2](#42-worker-pod)); the lease token in the finalize/fail `UPDATE` ensures only one writer ever lands the terminal transition.
+- **Shorten jobs** are enqueued with `asynq.TaskID(job_id)` (deduplicates *enqueue* — asynq rejects a second enqueue with the same TaskID while one is in-flight) and a short `asynq.Timeout` (~2 min, aligned with `CLAIM_LEASE`) so a crashed worker's task is bounded and asynq can redeliver it. The redelivered task unconditionally re-claims the abandoned `processing` row ([§4.2](#42-worker-pod)); the lease token in the finalize/fail `UPDATE` ensures only one writer ever lands the terminal transition.
 - **Webhook jobs** retry on the [§8](#8-webhook-contract) schedule.
 
 ### Dead-letter queue
@@ -1448,8 +1448,9 @@ All binaries are configured through environment variables, parsed by `internal/c
 |----------|---------|---------|-------------|
 | `LOG_LEVEL` | `info` | all | `slog` level (`debug`/`info`/`warn`/`error`) |
 | `SHORT_URL_BASE` | `http://localhost:8080` | api, worker | Base URL for building short links and QR content |
-| `DATABASE_URL` | `postgres://shortlink:shortlink@localhost:55432/shortlink?sslmode=disable` | api, worker, observer, keygen, migrate | Postgres DSN. The local default targets the docker-compose Postgres on host port `55432`; in k8s this points at **PgBouncer** (`:6432`), not Postgres directly |
-| `PG_POOL_SIZE` | `8` (api) / `4` (worker) | api, worker | `pgxpool` max connections per process |
+| `DATABASE_URL` | `postgres://shortlink:shortlink@localhost:16432/shortlink?sslmode=disable` | api, worker, observer, keygen, migrate | Postgres DSN. The local default targets the docker-compose **PgBouncer** on host port `16432` (matching §13's local topology); in k8s this points at the in-cluster PgBouncer Service on `:6432`. Direct-to-Postgres on host `:55432` works too (the compose stack still publishes it) when iterating on schema/migrations |
+| `API_PG_POOL_SIZE` | `8` | api | `pgxpool` max connections (api). Sized for request fan-in; replicas are bounded |
+| `WORKER_PG_POOL_SIZE` | `4` | worker | `pgxpool` max connections (worker). Smaller per-pod because the worker tier scales horizontally |
 | `REDIS_URL` | `redis://localhost:6379` | api, worker, observer | Queue, rate-limit windows, pod heartbeats |
 | `API_PORT` | `8080` | api | HTTP listen port |
 | `WORKER_PORT` | `8081` | worker | Health + metrics port |
@@ -1570,7 +1571,7 @@ The **observer hub is deliberately single-instance**. It is a stateful operabili
 - [x] Swap the `inproc` queue for the `asynq` implementation behind the same `Queue` interface
 - [x] Split the worker into its own binary
 - [x] Separate `shorten` and `webhook` queues
-- [x] Lease-based idempotency claim (status machine + crash recovery) + `asynq.Unique` and task timeout
+- [x] Lease-based idempotency claim (status machine + crash recovery) + `asynq.TaskID` dedup and task timeout
 - [x] Retry + dead-letter (archived set)
 - [x] Permanent-failure handling (`status='failed'`)
 - [x] Stale-record + orphaned-object sweeper (`internal/sweeper`)

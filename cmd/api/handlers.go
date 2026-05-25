@@ -24,6 +24,7 @@ import (
 	"github.com/leninboccardo/shortlink/internal/metrics"
 	"github.com/leninboccardo/shortlink/internal/middleware"
 	"github.com/leninboccardo/shortlink/internal/queue"
+	"github.com/leninboccardo/shortlink/internal/security"
 	"github.com/leninboccardo/shortlink/internal/shortener"
 )
 
@@ -109,7 +110,11 @@ func (a *app) handleShorten(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.ssrf.ValidateURL(r.Context(), webhookURL); err != nil {
 		a.log.Warn("webhook url rejected", "error", err)
-		httpx.WriteError(w, http.StatusUnprocessableEntity, "webhook URL failed SSRF validation")
+		msg := "webhook URL failed SSRF validation"
+		if errors.Is(err, security.ErrBlockedURL) {
+			msg = "webhook URL resolves to a disallowed (internal) address"
+		}
+		httpx.WriteError(w, http.StatusUnprocessableEntity, msg)
 		return
 	}
 

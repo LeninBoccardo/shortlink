@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net"
 	"strings"
+
+	"github.com/leninboccardo/shortlink/internal/security"
 )
 
 // errClass reduces an arbitrary worker error to one of a small fixed set of
@@ -22,6 +24,9 @@ func errClass(err error) string {
 		return "canceled"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
+	case errors.Is(err, security.ErrBlockedURL):
+		// Sentinel match: stable across error-message rewording.
+		return "ssrf_blocked"
 	}
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
@@ -40,8 +45,6 @@ func errClass(err error) string {
 		return "connection_refused"
 	case strings.Contains(s, "no such host"):
 		return "dns"
-	case strings.Contains(s, "blocked by SSRF"), strings.Contains(s, "ssrf"):
-		return "ssrf_blocked"
 	case strings.Contains(s, "unexpected status"), strings.Contains(s, "status code"):
 		return "http_status"
 	case strings.Contains(s, "EOF"):

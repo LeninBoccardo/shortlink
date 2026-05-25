@@ -53,6 +53,9 @@ func RenderCompose(cfg *Config, path string) error {
 		b.WriteString("        limits:\n")
 		fmt.Fprintf(&b, "          cpus: \"%s\"\n", trimZero(s.CPU))
 		fmt.Fprintf(&b, "          memory: %dM\n", s.MemoryMB)
+		// memswap_limit == memory means no swap; without it docker defaults
+		// to 2x memory so a "512M cap" silently allows 1024M with swap thrash.
+		fmt.Fprintf(&b, "    memswap_limit: %dM\n", s.MemoryMB)
 	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }

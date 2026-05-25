@@ -270,8 +270,11 @@ start_container() {
     # --add-host: Docker Desktop auto-adds host.docker.internal, but Linux
     # Docker doesn't. Without this, worker -> loadtest sink (host:8091) silently
     # fails on Linux even though SSRF_ALLOWLIST permits the name.
+    # --memory-swap=--memory disables swap (defaults to 2x memory otherwise),
+    # so the cap actually caps. Otherwise the scaling panel teaches the wrong
+    # lesson: "capped at 512M" but RSS+swap can reach 1024M.
     docker run -d --name "$container_name" --network shortlink_default \
-        --memory "${mem}M" --cpus "$cpu" \
+        --memory "${mem}M" --memory-swap "${mem}M" --cpus "$cpu" \
         --add-host "host.docker.internal:host-gateway" \
         -p "${port}:${port}" \
         -e "DATABASE_URL=postgres://shortlink:shortlink@pgbouncer:6432/shortlink?sslmode=disable" \

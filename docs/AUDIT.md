@@ -12,7 +12,8 @@ recorded, plus a rough confidence.
 | 2026-05-23 | M3+M4+M5       | commits `6941fc3..1307dc7` — P8, P9, P10, B6, B8, B10, B13, B14, D2, D4, D5, D8, S2, S3, S5 | B11 (re-reviewed and rejected — analysis was wrong) |
 | 2026-05-24 | M7             | commits `2a66607..1935b4e` — B1+B7, B2+B4, B3, B5+D1, B6, S1, S2, D2 (all 11 in-scope findings) | none |
 | 2026-05-24 | M8+M9          | not separately audited — M8 chart was written by inspection (helm/kind not installed locally to render-verify), M9 is text + the integration test under tests/ which is its own form of validation | M8 pod-eviction smoke (needs a real cluster) |
-| 2026-05-24 | post-M9 full repo + SPEC coverage | commits `ae172a0..d2c72d4` — B1, B2, B3, B5, B6, B7, B8, B9, COV-4, COV-5, COV-18, S1, S2, S3, S4, P5, P1+B4 (bundled), D1, D5, D6, D7, D9; SPEC drift in `d2c72d4` (COV-1, 2, 3-drop, 6, 7, 8, 9, 10, 11, 12, 14, 15, 17, 19) | B10 (verified false positive — vegeta.Stop is sync.Once-guarded), B4 (verified benign — ObjectKey deterministic from jobID) |
+| 2026-05-24 | post-M9 full repo + SPEC coverage | commits `ae172a0..d2c72d4` — B1, B2, B3, B5, B6, B7, B8, B9, COV-4, COV-5, COV-18, S1, S2, S3, S4, P5, P1+B4 (bundled), D1, D5, D6, D7, D9; SPEC drift in `d2c72d4` (COV-1, 2, 3-drop, 6, 7, 8, 9, 10, 11, 15, 17, 19) | B10 (verified false positive — vegeta.Stop is sync.Once-guarded), B4 (verified benign — ObjectKey deterministic from jobID) |
+| 2026-05-25 | v1-readiness sweep (spec-vs-code) | this pass — pgx `QueryExecModeExec` for PgBouncer transaction-mode safety; `PG_POOL_SIZE` split into `API_PG_POOL_SIZE`/`WORKER_PG_POOL_SIZE` (P7); `DATABASE_URL` default re-pointed at PgBouncer `:16432` to match §13; MinIO 1-day lifecycle backstop installed at worker boot (B1); pending-row rollback on enqueue failure (B3); webhook silent-drop on swept QR replaced with `webhook_failed` emit (B4-prev-M1); SPEC drift in §4.2 grace period and §7 `asynq.Unique → asynq.TaskID` | none |
 
 > M3+M4+M5 audit findings B7, B9, B12, P12, P13, P15, P17, S4, S6, S7, S8,
 > S9, S10, D6, D7, D9 were investigated and rejected as not real issues —
@@ -49,38 +50,41 @@ key, short TTL. Pairs naturally with M3's per-request Redis rate-limiting.
 *Suggested fix:* store the QR size in a new `short_urls` column at finalize
 time, or drop `size_bytes` from the webhook payload.
 
-### P7 — Pool sizing (score 2, confidence 90%)
-One `PG_POOL_SIZE` (8) is used for both binaries; SPEC §14 wants 8 (api) /
-4 (worker). `MinConns` is 0, so the first queries pay connection-setup latency.
-*Suggested fix:* per-binary pool sizing; set a small `MinConns` to keep
-connections warm.
+### P7 — Pool sizing (resolved 2026-05-25)
+Split into `API_PG_POOL_SIZE` (8) and `WORKER_PG_POOL_SIZE` (4) — matches SPEC
+§14, distinct values per binary. `MinConns` warmup was rejected: pgx defaults
+already cover this for the request path (first query opens a conn that stays
+hot under load), and forcing min-conns would just create idle PgBouncer
+sessions at startup. See `internal/config/config.go`.
 
 ## Deferred — bugs / correctness
 
-### B1 — Orphaned QR objects leak in MinIO (score 4, confidence 85%)
-The sweeper only reclaims QR objects referenced by `done` rows. A job that
-uploaded its QR then failed at the finalize step leaves the row `failed`;
-`DeleteOldFailedShortURLs` deletes the row but never the MinIO object →
-permanent orphan. Same for swept stale `processing` rows whose worker had
-already uploaded. The SPEC §6 backstop (a 1-day MinIO lifecycle rule) is not
-configured.
-*Suggested fix:* configure the MinIO lifecycle rule in `deploy/`, and/or have
-the sweeper list-and-compare bucket objects against live rows.
+### B1 — Orphaned QR objects leak in MinIO (resolved 2026-05-25)
+The SPEC §6 backstop — a 1-day MinIO/S3 lifecycle rule on the bucket — is now
+installed by `ensureLifecycleBackstop` in `internal/storage/minio.go`, called
+on every worker boot. SetBucketLifecycle is idempotent (replaces the config),
+fail-soft (a misconfigured rule logs a WARN but does not block startup), and
+works against any S3-compatible store, so the same Go code handles local
+MinIO and prod. List-and-compare against live rows was considered and
+rejected — adds bucket-scan cost on every sweeper tick for a backstop that
+the lifecycle rule covers structurally.
 
-### B3 — Custom slug locked 30 min on a transient enqueue failure (score 3, confidence 90%)
-If the row insert succeeds but `Enqueue` then fails (Redis blip), the orphan
-`pending` row holds the custom slug until the sweeper runs (`SWEEP_STALE_AGE`,
-30 min); client retries get `409` in the meantime.
-*Suggested fix:* on enqueue failure, delete the just-inserted row before
-returning the error.
+### B3 — Custom slug locked 30 min on a transient enqueue failure (resolved 2026-05-25)
+`cmd/api/handlers.go` now calls a new `DeletePendingReservation` query on
+enqueue failure. The query is pending-only-guarded so it can't race a worker
+that somehow already claimed the row (defense in depth — Enqueue failed, so
+no worker should have it). Best-effort: the rollback is logged but doesn't
+mask the original enqueue error to the client.
 
-### B4 — Webhook silently dropped if it runs after the QR is swept (score 2, confidence 70%)
-`handleWebhookJob` returns `nil` (no delivery, no error) when
-`!row.QrObject.Valid`. The retry window (~7.5 min) is normally inside
-`QR_OBJECT_TTL` (15 min), but a webhook delayed by a long queue backlog or
-worker downtime could run after the sweep → silent non-delivery.
-*Suggested fix:* deliver a degraded payload (no `qr_code`) or emit an explicit
-failure event instead of silently skipping.
+### B4 — Webhook silently dropped if it runs after the QR is swept (resolved 2026-05-25)
+`handleWebhookJob` now treats the `!row.QrObject.Valid` branch as a terminal
+failure: emits `webhook_failed` with `error_class=qr_object_swept`, bumps
+`shortlink_webhook_attempts_total{status=failure}` and the DLQ counter, and
+returns `nil` so asynq doesn't retry (the QR is gone — retrying can't recover
+it). Degraded delivery (payload without `qr_code`) was rejected as a worse
+outcome than explicit failure: the customer's webhook contract promises a
+QR, and silently shipping a partial payload would be harder to debug than a
+visible failure event.
 
 ### B11 — Heartbeat refresh/Del race (re-reviewed 2026-05-23, REJECTED)
 Original concern: `refresh()` in the ticker case could overlap with the

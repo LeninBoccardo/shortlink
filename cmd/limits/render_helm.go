@@ -51,10 +51,17 @@ func RenderHelm(cfg *Config, path string) error {
 
 	// Mirror worker's max_replicas into KEDA's maxReplicas so the autoscaler
 	// respects the same ceiling. KEDA itself stays enabled per values.yaml.
-	if w, ok := cfg.Services["worker"]; ok && w.MaxReplicas > 0 {
+	// When max_replicas is unset, fall back to the same default the replicas
+	// line uses (1) — emitting nothing here would let the chart's KEDA
+	// default exceed the budget intent, which the audit flagged as asymmetric.
+	if w, ok := cfg.Services["worker"]; ok {
+		maxReplicas := w.MaxReplicas
+		if maxReplicas <= 0 {
+			maxReplicas = 1
+		}
 		b.WriteString("keda:\n")
 		b.WriteString("  worker:\n")
-		fmt.Fprintf(&b, "    maxReplicas: %d\n", w.MaxReplicas)
+		fmt.Fprintf(&b, "    maxReplicas: %d\n", maxReplicas)
 	}
 
 	return os.WriteFile(path, []byte(b.String()), 0o644)

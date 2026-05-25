@@ -97,6 +97,16 @@ func (w *worker) handleShortenJob(ctx context.Context, payload []byte) (err erro
 		}
 		if rows == 0 {
 			w.log.Warn("finalize matched no rows; lease lost to a re-claim", "job_id", p.JobID)
+			// The other claimant finalized the row. It SHOULD have enqueued
+			// the webhook, but if THIS attempt is asynq's last delivery of
+			// the shorten task and the winner crashed (or got stuck) between
+			// FinalizeShortURL and enqueueWebhook, the webhook is lost
+			// forever. Idempotently enqueue: asynq's TaskID dedup makes
+			// this a no-op if the winner already enqueued. Skip the
+			// KindJobComplete emit + metrics inc — the winner owns those.
+			if err := w.enqueueWebhook(ctx, p.JobID); err != nil {
+				w.log.Error("re-enqueue webhook after lease loss", "error", err, "job_id", p.JobID)
+			}
 			return nil
 		}
 		break

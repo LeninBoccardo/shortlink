@@ -111,7 +111,7 @@ func (t *LastUsedToucher) worker() {
 func (t *LastUsedToucher) do(job touchJob) {
 	ctx, cancel := context.WithTimeout(context.Background(), touchCallTTL)
 	defer cancel()
-	ok, err := t.redis.SetNX(ctx, "lu:"+job.keyHash, "1", t.throttle).Result()
+	ok, err := t.redis.SetNX(ctx, "shortlink:lu:"+job.keyHash, "1", t.throttle).Result()
 	if err != nil {
 		t.log.Warn("last-used throttle check", "error", err)
 		return

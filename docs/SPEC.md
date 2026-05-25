@@ -334,7 +334,7 @@ request
 Uses a Redis sorted set per API key (sliding window algorithm):
 
 ```text
-Key pattern:   rl:{api_key_hash}
+Key pattern:   shortlink:rl:{api_key_hash}
 Window:        60 seconds
 Tier limits:
   free:        10 req/min   (RATE_LIMIT_FREE)
@@ -449,7 +449,7 @@ The worker runs a sweeper every ~60 s — see [§6, Stale record & object sweepe
 
 #### Pod heartbeat
 
-While running, the worker refreshes a Redis key `pod:{POD_ID}:alive` (15 s TTL) so the observer can count live pods ([§6](#6-storage-design)). It emits `pod_started` on boot and `pod_stopped` during drain.
+While running, the worker refreshes a Redis key `shortlink:pod:{POD_ID}:alive` (15 s TTL) so the observer can count live pods ([§6](#6-storage-design)). It emits `pod_started` on boot and `pod_stopped` during drain.
 
 #### Graceful shutdown
 
@@ -565,7 +565,7 @@ type SystemStat struct {
 
 | Field | Source |
 |-------|--------|
-| `ActivePods` | Count of live `pod:*:alive` keys in Redis (poller) |
+| `ActivePods` | Count of live `shortlink:pod:*:alive` keys in Redis (poller) |
 | `QueueDepth` | asynq pending-list length in Redis (poller) |
 | `TotalJobs` | Running count of `job_complete` events |
 | `ErrorRate` | `(job_error + job_dlq) / job_complete` over a rolling window (0 when no jobs) |
@@ -851,9 +851,9 @@ Used for several independent purposes:
 |---------|-------------|-----|
 | Task queues (via asynq) | `asynq:{queue}:*` | Managed by asynq |
 | Enqueue dedup (asynq Unique) | `asynq:unique:*` | Job retry lifetime |
-| Rate limit sliding window | `rl:{key_hash}` | 60 seconds (auto-expire) |
-| `last_used_at` write throttle | `lu:{key_hash}` | `LAST_USED_THROTTLE` (auto-expire) |
-| Pod heartbeat | `pod:{pod_id}:alive` | 15 seconds (worker refreshes; observer polls) |
+| Rate limit sliding window | `shortlink:rl:{key_hash}` | 60 seconds (auto-expire) |
+| `last_used_at` write throttle | `shortlink:lu:{key_hash}` | `LAST_USED_THROTTLE` (auto-expire) |
+| Pod heartbeat | `shortlink:pod:{pod_id}:alive` | 15 seconds (worker refreshes; observer polls) |
 
 ### Object Storage (MinIO in local, S3-compatible in prod)
 
@@ -1023,7 +1023,7 @@ Keys are generated once, shown once, never stored in plaintext. Only a SHA-256 h
 2. Gateway computes `SHA-256(key)`.
 3. Looks up the hash in Postgres; if not found or `revoked_at IS NOT NULL`, return `401`.
 4. Injects resolved `api_key_id` and `tier` into the request context.
-5. Updates `last_used_at` — **throttled**: the gateway writes Postgres only if the Redis key `lu:{key_hash}` is absent, then sets it with a `LAST_USED_THROTTLE` TTL (default 5 min). This bounds `last_used_at` writes to at most one per key per window regardless of traffic; the column is eventually consistent within that window, by design.
+5. Updates `last_used_at` — **throttled**: the gateway writes Postgres only if the Redis key `shortlink:lu:{key_hash}` is absent, then sets it with a `LAST_USED_THROTTLE` TTL (default 5 min). This bounds `last_used_at` writes to at most one per key per window regardless of traffic; the column is eventually consistent within that window, by design.
 
 > **Per-process key cache (post-audit T2.5).** Step 3 is cached in-process for **60 s** per successful lookup (`internal/auth/validator.go`). The gateway can serve >99% of authenticated requests from RAM under steady traffic. **Failed lookups are not cached**, so a brute-force attempt can't flood the cache with junk entries. **Revocation propagation SLA: up to 60 s × number of api pods** — a key revoked in Postgres still authenticates until each pod's cache entry expires. When a revocation surface ships (admin endpoint or pub-sub), it must call `Validator.Invalidate(hash)` to bypass this window. The cache exposes `shortlink_auth_key_cache_total{outcome=hit|miss}` for observability.
 
@@ -1043,10 +1043,10 @@ This mirrors how Stripe and GitHub separate inbound API credentials from outboun
 Per-key sliding window implemented with a Redis sorted set:
 
 ```text
-ZADD  rl:{key_hash}  {now_unix_ms}  {request_id}
-ZREMRANGEBYSCORE  rl:{key_hash}  -inf  {window_start_ms}
-ZCARD  rl:{key_hash}   → if > limit, reject 429
-EXPIRE rl:{key_hash}  60
+ZADD  shortlink:rl:{key_hash}  {now_unix_ms}  {request_id}
+ZREMRANGEBYSCORE  shortlink:rl:{key_hash}  -inf  {window_start_ms}
+ZCARD  shortlink:rl:{key_hash}   → if > limit, reject 429
+EXPIRE shortlink:rl:{key_hash}  60
 ```
 
 All four commands execute atomically in a Lua script to prevent race conditions. See the v1-scope note in [§4.1](#41-api-gateway) regarding unauthenticated traffic.

@@ -71,7 +71,7 @@ func (r *RateLimiter) Check(ctx context.Context, keyHash string, limit int, requ
 		return Decision{Allowed: true}, nil
 	}
 	now := time.Now()
-	res, err := r.script.Run(ctx, r.client, []string{"rl:" + keyHash},
+	res, err := r.script.Run(ctx, r.client, []string{"shortlink:rl:" + keyHash},
 		now.UnixMilli(), r.window.Milliseconds(), limit, requestID).Slice()
 	if err != nil {
 		return Decision{}, fmt.Errorf("rate limit eval: %w", err)

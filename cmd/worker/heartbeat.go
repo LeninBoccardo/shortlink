@@ -20,7 +20,7 @@ const (
 // is cancelled. On exit it deletes the key so the observer drops the pod from
 // the live count immediately rather than waiting for the TTL.
 func runHeartbeat(ctx context.Context, rc *redis.Client, podID string, log *slog.Logger) {
-	key := "pod:" + podID + ":alive"
+	key := "shortlink:pod:" + podID + ":alive"
 	refresh := func() {
 		// Per-call timeout: a wedged Redis at SIGTERM mustn't hang shutdown.
 		setCtx, cancel := context.WithTimeout(ctx, 2*time.Second)

@@ -122,12 +122,12 @@ func (p *Poller) tick(ctx context.Context) {
 	p.wasDLQNonemptyLastTick = dlqNow
 }
 
-// countAlivePods counts pod:*:alive keys via SCAN — avoid KEYS, which is
-// O(N) blocking. The set is tiny (one per worker pod) so a single SCAN pass
-// with a generous Count is plenty.
+// countAlivePods counts shortlink:pod:*:alive keys via SCAN — avoid KEYS,
+// which is O(N) blocking. The set is tiny (one per worker pod) so a single
+// SCAN pass with a generous Count is plenty.
 func (p *Poller) countAlivePods(ctx context.Context) (int, error) {
 	var count int
-	iter := p.rc.Scan(ctx, 0, "pod:*:alive", 100).Iterator()
+	iter := p.rc.Scan(ctx, 0, "shortlink:pod:*:alive", 100).Iterator()
 	for iter.Next(ctx) {
 		count++
 	}

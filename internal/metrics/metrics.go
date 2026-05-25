@@ -129,6 +129,14 @@ var (
 		Help: "Events dropped due to ingest buffer overflow.",
 	}, []string{"source"})
 
+	// Validator API-key cache hit/miss. Lets dashboards confirm the cache is
+	// absorbing the per-request lookup load it's meant to (one PG round-trip
+	// per authenticated request was a primary load-test bottleneck).
+	AuthKeyCacheTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "shortlink_auth_key_cache_total",
+		Help: "Validator API-key cache outcomes (hit | miss).",
+	}, []string{"outcome"})
+
 	// Queue / DLQ depth, set by the observer's Redis poller.
 	QueueDepth = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "shortlink_queue_depth",

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"time"
@@ -68,8 +69,12 @@ func RenderHelm(cfg *Config, path string) error {
 }
 
 // milliCPU converts 0.5 -> "500m", 1.0 -> "1000m" (k8s convention).
+// Uses math.Round so the helm output matches the compose renderer's
+// `%.3f`+trim formatting at fractional CPU values (e.g. 0.1235 cores
+// renders 124m here and "0.124" in compose, instead of the prior 123m
+// floor that drifted by 1mC under truncation).
 func milliCPU(f float64) string {
-	return fmt.Sprintf("%dm", int(f*1000))
+	return fmt.Sprintf("%dm", int(math.Round(f*1000)))
 }
 
 // mebibytes formats an integer MB as a Mi suffix (k8s convention).

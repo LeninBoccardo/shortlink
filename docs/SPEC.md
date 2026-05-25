@@ -691,6 +691,19 @@ The load test runner has three jobs: run multi-key attacks against the API, **se
 
 `--sink-url` is the address the **API/worker** must use to reach the sink. The load test runner always runs on the host ([§13](#13-local-development)); the value differs by where the API runs: `http://localhost:8091/sink` when the API is also on the host, `http://host.docker.internal:8091/sink` when the API runs in docker-compose. Whatever host it names must be present in `SSRF_ALLOWLIST` ([§9](#9-security)).
 
+#### Test console
+
+In addition to the attack runner and the sink, the loadtest binary mounts a small in-process **test console** on the same `:8090` HTTP server. It exposes:
+
+```text
+GET  /tests/list      catalog of one-shot probes (id, category, title, manual flag)
+POST /tests/run/{id}  execute one case; returns structured pass/fail + details
+```
+
+Each case is a curl-equivalent of a section in [`docs/MANUAL_TESTING.md`](MANUAL_TESTING.md) — POST `/shorten` with edge-case inputs (bad key → 401, custom-slug collision → 409, RFC1918 webhook → 422, rate-limit burst → 429), Prometheus targets-up probe, Grafana datasource ping, an end-to-end integration test that shells `go test -tags integration ./tests/…`. Manual-only entries (the k8s walkthrough) carry steps but no `run`.
+
+The console renders as a panel on the showcase page; results stream back per card. Used during development to confirm a change didn't regress any audit-fixed status code without leaving the browser. Because the page binds loopback only (T1.6), the console is local-dev only — no auth, no rate limit on `/tests/run`.
+
 #### keys.yaml format
 
 ```yaml

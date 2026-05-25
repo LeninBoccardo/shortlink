@@ -1398,8 +1398,6 @@ The loadtest binary exposes two endpoints for the page:
 - `GET /api/scaling-services` — static catalog (rendered once at page load).
 - `GET /api/scaling-stats` — live values, polled every ~5 s; per-service errors are surfaced in an `error` field rather than failing the whole row.
 
-`/proxy/prom/{query,query_range}` is also wired for same-origin Prometheus queries from the frontend, though the scaling panel itself uses the server-side `/api/scaling-stats` collector.
-
 ### Container mode
 
 By default the setup scripts run api/worker/observer as host processes via `go build` + background launch. `-ContainerMode` / `--container-mode` instead wraps each of those three binaries in `docker run --memory <m>M --cpus <c>` on the `shortlink_default` compose network, with caps pulled from `config/local-limits.yaml` via `cmd/limits get <svc> <cpu|memory_mb>`. The Dockerfile is the same one `make images` builds for k8s (distroless-nonroot, static binary, `shortlink-<svc>:dev`).

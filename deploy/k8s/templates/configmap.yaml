@@ -7,7 +7,8 @@ metadata:
 data:
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
   SHORT_URL_BASE: {{ .Values.config.shortURLBase | quote }}
-  PG_POOL_SIZE: {{ .Values.config.pgPoolSize | quote }}
+  API_PG_POOL_SIZE: {{ .Values.config.apiPgPoolSize | quote }}
+  WORKER_PG_POOL_SIZE: {{ .Values.config.workerPgPoolSize | quote }}
   MINIO_ENDPOINT: {{ .Values.minio.endpoint | quote }}
   MINIO_BUCKET: {{ .Values.minio.bucket | quote }}
   MINIO_USE_SSL: {{ .Values.minio.useSSL | quote }}

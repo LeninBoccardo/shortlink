@@ -78,7 +78,7 @@ func run() error {
 	startupCtx, cancelStartup := context.WithTimeout(context.Background(), startupTimeout)
 	defer cancelStartup()
 
-	pool, err := storage.NewPool(startupCtx, cfg.DatabaseURL, cfg.PGPoolSize)
+	pool, err := storage.NewPool(startupCtx, cfg.DatabaseURL, cfg.APIPGPoolSize)
 	if err != nil {
 		return err
 	}

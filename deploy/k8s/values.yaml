@@ -72,7 +72,8 @@ secrets:
 config:
   logLevel: info
   shortURLBase: http://shortlink.example.com
-  pgPoolSize: 8
+  apiPgPoolSize: 8
+  workerPgPoolSize: 4
   signedURLTTL: 60s
   qrSize: 256
   slugLength: 7

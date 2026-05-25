@@ -25,8 +25,16 @@ type Config struct {
 	ShortURLBase string `env:"SHORT_URL_BASE" envDefault:"http://localhost:8080"`
 
 	// Postgres
-	DatabaseURL string `env:"DATABASE_URL" envDefault:"postgres://shortlink:shortlink@localhost:55432/shortlink?sslmode=disable"`
-	PGPoolSize  int32  `env:"PG_POOL_SIZE" envDefault:"8"`
+	DatabaseURL string `env:"DATABASE_URL" envDefault:"postgres://shortlink:shortlink@localhost:16432/shortlink?sslmode=disable"`
+	// API_PG_POOL_SIZE / WORKER_PG_POOL_SIZE are per-binary so each pool
+	// can be sized to its actual concurrency (SPEC §14). The api keeps a
+	// larger pool because every incoming request runs auth + insert (two
+	// queries) and replicas are bounded; workers run a small fixed number
+	// of goroutines per pod and the worker tier scales horizontally, so
+	// holding 8 connections per pod would explode the total connection
+	// count at the upstream Postgres.
+	APIPGPoolSize    int32 `env:"API_PG_POOL_SIZE" envDefault:"8"`
+	WorkerPGPoolSize int32 `env:"WORKER_PG_POOL_SIZE" envDefault:"4"`
 
 	// Redis — backs the asynq task queue
 	RedisURL string `env:"REDIS_URL" envDefault:"redis://localhost:6379"`

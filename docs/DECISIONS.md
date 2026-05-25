@@ -82,9 +82,10 @@ as `NNNN_*.sql`. **Why:** simpler than embedded migration libraries, plays
 well with a future Kubernetes pre-upgrade Job (M8). **Tradeoff:** no
 SQL-as-Go migrations; that hasn't bitten yet.
 
-### One `PG_POOL_SIZE` env var for both binaries (M1, deferred — see AUDIT.md P7)
-SPEC §14 wants 8 for api / 4 for worker; today both pull from one var.
-Acceptable for local; revisit during M8 when both get distinct ConfigMaps.
+### Per-binary pool sizing: `API_PG_POOL_SIZE` / `WORKER_PG_POOL_SIZE` (M1 → resolved post-v1-audit)
+Started life as one `PG_POOL_SIZE` shared by both binaries; SPEC §14 always
+wanted 8 for api / 4 for worker but the M1 cut-over kept it simple. Split out
+once the helm chart was real and each binary had its own ConfigMap surface.
 
 ### `hit_count` denormalized counter on `short_urls` (M1, deferred — see AUDIT.md P1)
 Every redirect runs `UPDATE ... SET hit_count = hit_count+1`. Known to cause

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	cryptorand "crypto/rand"
 	"encoding/json"
 	"errors"
@@ -139,10 +140,16 @@ func (a *app) handleShorten(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Durable work (row reservation + enqueue) is decoupled from the request
+	// context so a client disconnect mid-flight can't leave an orphan
+	// `pending` row that no worker will ever see.
+	bgCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+
 	// Reserve the row. For a custom slug this also reserves the slug; a
 	// conflict (zero rows) means the slug is already taken.
 	if customSlug != "" {
-		_, err = a.queries.InsertPendingShortURLWithSlug(r.Context(), db.InsertPendingShortURLWithSlugParams{
+		_, err = a.queries.InsertPendingShortURLWithSlug(bgCtx, db.InsertPendingShortURLWithSlugParams{
 			JobID:       jobID,
 			Slug:        pgtype.Text{String: customSlug, Valid: true},
 			OriginalUrl: req.URL,
@@ -155,7 +162,7 @@ func (a *app) handleShorten(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		_, err = a.queries.InsertPendingShortURL(r.Context(), db.InsertPendingShortURLParams{
+		_, err = a.queries.InsertPendingShortURL(bgCtx, db.InsertPendingShortURLParams{
 			JobID:       jobID,
 			OriginalUrl: req.URL,
 			ApiKeyID:    apiKey.ID,
@@ -183,7 +190,7 @@ func (a *app) handleShorten(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if err := a.queue.Enqueue(r.Context(), queue.Job{Type: queue.TypeShorten, Key: jobID, Payload: payload}); err != nil {
+	if err := a.queue.Enqueue(bgCtx, queue.Job{Type: queue.TypeShorten, Key: jobID, Payload: payload}); err != nil {
 		a.log.Error("enqueue shorten job", "error", err, "job_id", jobID)
 		httpx.WriteError(w, http.StatusInternalServerError, "internal error")
 		return

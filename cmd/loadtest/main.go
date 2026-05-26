@@ -41,14 +41,24 @@ type runConfig struct {
 	limitsPath    string
 	target        string
 	duration      time.Duration
-	observerURL   string
-	grafanaURL    string
+	observerURL   string // server-side: where loadtest emits events
+	grafanaURL    string // server-side: where the grafana-healthz test fetches
 	prometheusURL string
-	pagePort      int
-	sinkURL       string
-	sinkPort      int
-	databaseURL   string
-	containerMode bool
+	// observerPublicURL is what the BROWSER uses to open the WebSocket. In
+	// dev mode (loadtest on host) this is identical to observerURL — both
+	// "localhost:9090". In compose.full mode they diverge: the loadtest
+	// container reaches observer at "observer:9090" but the host browser
+	// must use "localhost:9090" via the published port. Defaults to
+	// observerURL when not set.
+	observerPublicURL string
+	// grafanaPublicURL is the same idea for Grafana iframes. Defaults to
+	// grafanaURL when not set.
+	grafanaPublicURL string
+	pagePort         int
+	sinkURL          string
+	sinkPort         int
+	databaseURL      string
+	containerMode    bool
 }
 
 func main() {
@@ -65,8 +75,10 @@ func parseFlags() runConfig {
 	flag.StringVar(&cfg.limitsPath, "limits", "config/local-limits.yaml", "path to local-limits.yaml (scaling panel source)")
 	flag.StringVar(&cfg.target, "target", "http://localhost:8080", "API gateway base URL")
 	flag.DurationVar(&cfg.duration, "duration", 60*time.Second, "default attack duration (POST /api/attack/start can override)")
-	flag.StringVar(&cfg.observerURL, "observer", "http://localhost:9090", "observer hub URL")
-	flag.StringVar(&cfg.grafanaURL, "grafana", "http://localhost:3000", "Grafana base URL (M6 showcase page)")
+	flag.StringVar(&cfg.observerURL, "observer", "http://localhost:9090", "observer hub URL (server-side: event emission)")
+	flag.StringVar(&cfg.observerPublicURL, "observer-public", "", "observer URL templated into the browser page for the WebSocket (defaults to --observer)")
+	flag.StringVar(&cfg.grafanaURL, "grafana", "http://localhost:3000", "Grafana base URL (server-side: grafana-healthz test target)")
+	flag.StringVar(&cfg.grafanaPublicURL, "grafana-public", "", "Grafana URL templated into the browser page for iframe embedding (defaults to --grafana)")
 	flag.StringVar(&cfg.prometheusURL, "prometheus", "http://localhost:9091", "Prometheus base URL (test console targets-up check)")
 	flag.IntVar(&cfg.pagePort, "port", 8090, "showcase page port")
 	flag.StringVar(&cfg.sinkURL, "sink-url", "http://localhost:8091/sink", "webhook sink URL advertised to the API")
@@ -78,6 +90,15 @@ func parseFlags() runConfig {
 	flag.StringVar(&cfg.databaseURL, "database-url", envOr("DATABASE_URL", "postgres://shortlink:shortlink@localhost:16432/shortlink?sslmode=disable"), "Postgres DSN for keygen + revoke")
 	flag.Parse()
 	cfg.containerMode = envBool("CONTAINER_MODE")
+	// Default the public URLs to the server-side ones — covers dev mode
+	// where loadtest runs on the host and every URL is "localhost:N".
+	// compose.full / k8s pass both explicitly so they diverge cleanly.
+	if cfg.observerPublicURL == "" {
+		cfg.observerPublicURL = cfg.observerURL
+	}
+	if cfg.grafanaPublicURL == "" {
+		cfg.grafanaPublicURL = cfg.grafanaURL
+	}
 	return cfg
 }
 
@@ -167,12 +188,20 @@ func run(cfg runConfig) error {
 	}
 	control := newControlServer(registry, queries, cfg, log, emitter, sinkSrv)
 
-	// Bind to loopback only: /api/keys/generate is an unauthenticated
-	// keygen oracle, /api/attack/start triggers a vegeta storm, and
-	// /tests/run/* shells `go test`. Same threat model as before -- adding
-	// the new endpoints didn't change it.
+	// Bind address depends on mode. In dev mode the binary runs on the
+	// host so loopback-only is the only thing standing between an
+	// attacker on the same LAN and the unauthenticated keygen oracle /
+	// vegeta trigger / `go test` shell. In CONTAINER_MODE the container
+	// is the isolation boundary — the page server needs to listen on
+	// all interfaces so the docker port mapping (and the k8s Service)
+	// can reach it. The container's network policy / k8s NetworkPolicy
+	// gates external access.
+	bindAddr := fmt.Sprintf("127.0.0.1:%d", cfg.pagePort)
+	if cfg.containerMode {
+		bindAddr = fmt.Sprintf(":%d", cfg.pagePort)
+	}
 	pageHTTP := &http.Server{
-		Addr:              fmt.Sprintf("127.0.0.1:%d", cfg.pagePort),
+		Addr:              bindAddr,
 		Handler:           page.routes(tests, scaling, control),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,

@@ -32,15 +32,21 @@ type pageServer struct {
 // newPageServer renders index.html with the runtime config baked in. The
 // SHORTLINK_CONFIG object is a JSON literal injected into a top-of-page
 // <script> — app.js reads window.SHORTLINK_CONFIG synchronously on load.
+//
+// Browser-facing URLs (observer WebSocket, Grafana iframes, CSP connect/
+// frame-src) use the *PublicURL fields, NOT the server-side fields. In dev
+// mode these are identical; in compose.full / k8s the loadtest binary lives
+// inside the network and reaches observer at "observer:9090", but the
+// browser must use the published host port.
 func newPageServer(cfg runConfig) (*pageServer, error) {
-	// Refuse to start with a malformed --grafana flag. The page injects the
-	// value as an iframe src; a javascript: URL would execute, and even
-	// well-formed http(s) URLs are sandbox-restricted by the embedded HTML.
-	// Empty is allowed -- the JS shows a fallback hint.
-	if cfg.grafanaURL != "" &&
-		!strings.HasPrefix(cfg.grafanaURL, "http://") &&
-		!strings.HasPrefix(cfg.grafanaURL, "https://") {
-		return nil, fmt.Errorf("--grafana must be http:// or https:// (got %q)", cfg.grafanaURL)
+	// Refuse to start with a malformed --grafana-public flag. The page
+	// injects the value as an iframe src; a javascript: URL would execute,
+	// and even well-formed http(s) URLs are sandbox-restricted by the
+	// embedded HTML. Empty is allowed -- the JS shows a fallback hint.
+	if cfg.grafanaPublicURL != "" &&
+		!strings.HasPrefix(cfg.grafanaPublicURL, "http://") &&
+		!strings.HasPrefix(cfg.grafanaPublicURL, "https://") {
+		return nil, fmt.Errorf("--grafana-public must be http:// or https:// (got %q)", cfg.grafanaPublicURL)
 	}
 	rawHTML, err := fs.ReadFile(webFS, "web/index.html")
 	if err != nil {
@@ -51,9 +57,9 @@ func newPageServer(cfg runConfig) (*pageServer, error) {
 		return nil, fmt.Errorf("parse index.html: %w", err)
 	}
 	pageCfg := map[string]string{
-		"observer_url": cfg.observerURL,
-		"observer_ws":  observerWSURL(cfg.observerURL),
-		"grafana_url":  cfg.grafanaURL,
+		"observer_url": cfg.observerPublicURL,
+		"observer_ws":  observerWSURL(cfg.observerPublicURL),
+		"grafana_url":  cfg.grafanaPublicURL,
 		"sink_url":     cfg.sinkURL,
 	}
 	cfgJSON, err := json.Marshal(pageCfg)
@@ -70,7 +76,7 @@ func newPageServer(cfg runConfig) (*pageServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scope to web/: %w", err)
 	}
-	csp, err := buildCSP(buf.Bytes(), cfg.observerURL, cfg.grafanaURL)
+	csp, err := buildCSP(buf.Bytes(), cfg.observerPublicURL, cfg.grafanaPublicURL)
 	if err != nil {
 		return nil, err
 	}

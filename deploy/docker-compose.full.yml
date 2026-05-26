@@ -1,0 +1,173 @@
+# ShortLink — full-stack compose layer (SPEC §13, showcase mode).
+#
+# Combined with the base docker-compose.yml (infra services), this brings
+# up api / worker / observer / loadtest as containers too — one command
+# starts the entire stack without a Go toolchain on the host. Iteration
+# mode (binaries on the host, `make run-api` etc.) still uses the base
+# compose file alone.
+#
+# Usage:
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.full.yml up -d --build
+#   # or: make full
+#
+# Network: every service joins the compose default network (`shortlink_default`)
+# and talks via service names (postgres, pgbouncer, redis, minio, observer,
+# api, worker, loadtest). Host ports are published only where the browser
+# needs to reach a service directly (8090 loadtest page, 9090 observer WS,
+# 3000 grafana iframe, 8080 api for curl-from-host convenience).
+#
+# Migrations run via the existing migrate service (profiles: ["migrate"]
+# in the base file). Bring them up explicitly before starting api/worker:
+#   docker compose --profile migrate -f deploy/docker-compose.yml ... up -d migrate
+# or rely on the make target which orchestrates it.
+name: shortlink
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        BINARY: api
+    image: shortlink-api:dev
+    environment:
+      DATABASE_URL: "postgres://shortlink:shortlink@pgbouncer:6432/shortlink?sslmode=disable"
+      REDIS_URL: "redis://redis:6379"
+      OBSERVER_URL: "http://observer:9090"
+      SHORT_URL_BASE: "http://localhost:8080"
+      API_PG_POOL_SIZE: "8"
+      # SSRF_ALLOWLIST: the loadtest container's sink at "loadtest:8091"
+      # is the legitimate webhook target during in-stack attacks. Without
+      # this, the SSRF guard rejects "loadtest" as a non-public DNS name.
+      SSRF_ALLOWLIST: "loadtest,host.docker.internal"
+      # URL_BLOCKLIST: empty by default (matches the dev-mode default). Set
+      # this here in your own override file if you want to demo COV-4.
+      URL_BLOCKLIST: ""
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      pgbouncer:
+        condition: service_started
+      observer:
+        condition: service_started
+    # No container-level healthcheck: the distroless runtime ships without
+    # a shell or curl, so the only viable check would be a self-probe in
+    # the Go binary, which would need a dedicated flag. Worth doing in a
+    # later iteration; for now the dependent services tolerate the api
+    # restart-on-failure path and the `make full` target waits for the
+    # migrate job to complete before bringing api/worker up.
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        BINARY: worker
+    image: shortlink-worker:dev
+    environment:
+      DATABASE_URL: "postgres://shortlink:shortlink@pgbouncer:6432/shortlink?sslmode=disable"
+      REDIS_URL: "redis://redis:6379"
+      MINIO_ENDPOINT: "minio:9000"
+      OBSERVER_URL: "http://observer:9090"
+      SHORT_URL_BASE: "http://localhost:8080"
+      WORKER_PG_POOL_SIZE: "4"
+      # Same SSRF carve-out: the worker delivers webhooks to the loadtest
+      # sink during in-stack attacks.
+      SSRF_ALLOWLIST: "loadtest,host.docker.internal"
+      # POD_ID identifies the worker for the observer's pod heartbeat
+      # (Redis key shortlink:pod:<POD_ID>:alive). Compose has no
+      # downward API so we hand a stable name in.
+      POD_ID: "worker-compose"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      pgbouncer:
+        condition: service_started
+      observer:
+        condition: service_started
+    restart: unless-stopped
+
+  observer:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        BINARY: observer
+    image: shortlink-observer:dev
+    environment:
+      REDIS_URL: "redis://redis:6379"
+      OBSERVER_PORT: "9090"
+      # Browser handshake comes from http://localhost:8090 (the loadtest
+      # page). The published observer port also exposes /stream on
+      # localhost:9090, but the WebSocket Origin header is the page's
+      # origin, so allow both 8090 explicitly.
+      OBSERVER_ALLOWED_ORIGINS: "http://localhost:8090,http://127.0.0.1:8090"
+    ports:
+      # Browser reaches the WS at ws://localhost:9090/stream.
+      - "9090:9090"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  loadtest:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        BINARY: loadtest
+    image: shortlink-loadtest:dev
+    # The loadtest binary's flags carry both the server-side URLs
+    # (compose names — used by vegeta / event emission / healthchecks)
+    # and the public URLs (host-side names — templated into the browser
+    # page for the WS connection and Grafana iframes). Phase A added the
+    # --observer-public / --grafana-public flags for exactly this split.
+    command:
+      - "--target=http://api:8080"
+      - "--observer=http://observer:9090"
+      - "--observer-public=http://localhost:9090"
+      - "--grafana=http://grafana:3000"
+      - "--grafana-public=http://localhost:3000"
+      - "--prometheus=http://prometheus:9090"
+      - "--sink-url=http://loadtest:8091/sink"
+      - "--keys=/config/keys.yaml"
+      - "--limits=/config/local-limits.yaml"
+    environment:
+      DATABASE_URL: "postgres://shortlink:shortlink@pgbouncer:6432/shortlink?sslmode=disable"
+      # CONTAINER_MODE=true tells the test-runner to drop the integration-
+      # test card from /tests/list (no Go toolchain, no docker socket
+      # mounted, so testcontainers can't run from here).
+      CONTAINER_MODE: "true"
+    ports:
+      # 8090 = showcase page (operator panel + test console).
+      # 8091 = webhook sink — published so a host-mode worker could also
+      # deliver here during mixed setups, but normally the in-compose
+      # worker reaches the sink via "loadtest:8091" on the internal net.
+      - "8090:8090"
+      - "8091:8091"
+    volumes:
+      # config/keys.yaml is the canonical source of truth (SPEC §4.4).
+      # Bind-mount it so keys generated via the operator panel persist
+      # across container restarts AND remain editable from the host.
+      # The local-limits.yaml is bind-mounted RO so the scaling panel
+      # has the same input it would have on the host.
+      - ../config:/config
+    depends_on:
+      postgres:
+        condition: service_healthy
+      observer:
+        condition: service_started
+      api:
+        condition: service_started
+    restart: unless-stopped

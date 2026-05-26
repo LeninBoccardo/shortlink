@@ -1,5 +1,6 @@
 # ShortLink — developer tasks (SPEC §13). Targets grow as milestones land.
 COMPOSE := docker compose -f deploy/docker-compose.yml
+COMPOSE_FULL := docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.full.yml
 
 # k8s targets (M8). KIND_CLUSTER stays overridable from the env.
 KIND_CLUSTER ?= shortlink
@@ -8,6 +9,7 @@ HELM_NAMESPACE ?= default
 IMAGE_TAG ?= dev
 
 .PHONY: dev dev-down stack-up stack-logs migrate keys run-api run-worker run-observer loadtest build test test-integration sqlc tidy \
+        full full-down full-logs \
         images kind-up kind-load k8s-up k8s-down k8s-logs k8s-status
 
 dev: ## start local infrastructure (Postgres + MinIO + Redis + Prometheus + Grafana)
@@ -59,11 +61,34 @@ tidy: ## tidy and verify go module dependencies
 # Kubernetes (M8). Assumes kind, kubectl, helm are on PATH. See
 # deploy/k8s/README.md for the one-time cluster setup (Calico + KEDA).
 
-images: ## build api/worker/observer/migrate docker images locally
+images: ## build api/worker/observer/migrate/loadtest docker images locally
 	docker build --build-arg BINARY=api      -t shortlink-api:$(IMAGE_TAG)      .
 	docker build --build-arg BINARY=worker   -t shortlink-worker:$(IMAGE_TAG)   .
 	docker build --build-arg BINARY=observer -t shortlink-observer:$(IMAGE_TAG) .
 	docker build --build-arg BINARY=migrate  -t shortlink-migrate:$(IMAGE_TAG)  .
+	docker build --build-arg BINARY=loadtest -t shortlink-loadtest:$(IMAGE_TAG) .
+
+# ---------------------------------------------------------------------------
+# Compose.full — one-command showcase mode (SPEC §13). Brings up the full
+# stack INCLUDING api/worker/observer/loadtest as containers, so the user
+# doesn't need a Go toolchain. `make dev` stays the iteration-friendly mode
+# (infra only; binaries on the host).
+
+full: ## bring up everything in containers (infra + api/worker/observer/loadtest)
+	# Build images up front so the migrate step doesn't lag on a cold cache.
+	# Profile gate keeps the migrate service out of the default `up`; we
+	# run it in the foreground so api/worker only start once schema is at
+	# head. `restart: no` (set in the base file) means it exits cleanly
+	# after applying.
+	$(COMPOSE_FULL) build
+	$(COMPOSE) --profile migrate run --rm migrate
+	$(COMPOSE_FULL) up -d
+
+full-down: ## tear the full stack down (preserves named volumes)
+	$(COMPOSE_FULL) down
+
+full-logs: ## tail api + worker + observer + loadtest logs
+	$(COMPOSE_FULL) logs -f api worker observer loadtest
 
 kind-up: ## create the local kind cluster (idempotent)
 	kind get clusters | grep -q "^$(KIND_CLUSTER)$$" || kind create cluster --name $(KIND_CLUSTER)

@@ -557,6 +557,11 @@
       });
       testGrid.appendChild(group);
     });
+    // Catalog and operator keys load in parallel; whichever finishes second
+    // is responsible for re-applying tier gating to the now-existing cards.
+    if (typeof updateTierAvailability === "function") {
+      updateTierAvailability();
+    }
   }
 
   function buildCard(c) {
@@ -769,6 +774,340 @@
   }
 
   loadCatalog();
+
+  // ---------- operator panel (Phase B) -------------------------------------
+  //
+  // Keys list + generate form (left card). Attack controls (right card) with
+  // a polling status indicator. Loading the keys also walks the test
+  // catalog and disables Run buttons whose required_tier isn't covered,
+  // so users get an actionable hint instead of a generic 401.
+  //
+  // No long-lived state in this module; the page-server is the source of
+  // truth and every mutation refetches.
+
+  var opEls = {
+    keyTbody:        document.getElementById("op-key-tbody"),
+    keygenForm:      document.getElementById("op-keygen-form"),
+    keyName:         document.getElementById("op-key-name"),
+    keyTier:         document.getElementById("op-key-tier"),
+    btnGenerate:     document.getElementById("op-btn-generate"),
+    generateResult:  document.getElementById("op-generate-result"),
+    stateDot:        document.getElementById("op-state-dot"),
+    stateText:       document.getElementById("op-state-text"),
+    stateDetail:     document.getElementById("op-state-detail"),
+    attackForm:      document.getElementById("op-attack-form"),
+    attackDuration:  document.getElementById("op-attack-duration"),
+    attackKeys:      document.getElementById("op-attack-keys"),
+    btnAttackStart:  document.getElementById("op-btn-attack-start"),
+    btnAttackStop:   document.getElementById("op-btn-attack-stop"),
+  };
+
+  // operatorKeys is the most recent /api/keys snapshot, used by
+  // updateTierAvailability so the test-card render path can reuse it
+  // without an extra HTTP round-trip.
+  var operatorKeys = [];
+
+  function loadOperatorKeys() {
+    return fetch("/api/keys", { headers: { "Accept": "application/json" } })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(function (keys) {
+        operatorKeys = keys || [];
+        renderOperatorKeys();
+        renderAttackKeyPicker();
+        updateTierAvailability();
+      })
+      .catch(function (err) {
+        if (opEls.keyTbody) {
+          opEls.keyTbody.innerHTML = '<tr class="empty"><td colspan="5">Failed to load keys: ' + escapeHTML(err.message) + '</td></tr>';
+        }
+      });
+  }
+
+  function renderOperatorKeys() {
+    if (!opEls.keyTbody) return;
+    opEls.keyTbody.innerHTML = "";
+    if (!operatorKeys.length) {
+      var tr = document.createElement("tr");
+      tr.className = "empty";
+      // Avoid `var td` here — it would hoist to the function scope and
+      // shadow the `td()` helper used in the non-empty branch below,
+      // breaking with "td is not a function" the moment any key exists.
+      var emptyCell = document.createElement("td");
+      emptyCell.colSpan = 5;
+      emptyCell.textContent = "No keys yet — generate one below.";
+      tr.appendChild(emptyCell);
+      opEls.keyTbody.appendChild(tr);
+      return;
+    }
+    operatorKeys.forEach(function (k) {
+      var row = document.createElement("tr");
+      row.appendChild(td(k.name));
+      row.appendChild(td(k.tier, "op-tier op-tier-" + k.tier));
+      row.appendChild(td(k.key_hint, "op-hint"));
+      row.appendChild(td(String(k.attack_rate_per_min), "col-num"));
+      var actionTd = document.createElement("td");
+      actionTd.className = "op-action-cell";
+      var btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn btn-link";
+      btn.textContent = "revoke";
+      btn.addEventListener("click", function () { revokeOperatorKey(k.key_hint, k.name); });
+      actionTd.appendChild(btn);
+      row.appendChild(actionTd);
+      opEls.keyTbody.appendChild(row);
+    });
+  }
+
+  function td(text, className) {
+    var el = document.createElement("td");
+    el.textContent = text;
+    if (className) el.className = className;
+    return el;
+  }
+
+  function renderAttackKeyPicker() {
+    if (!opEls.attackKeys) return;
+    opEls.attackKeys.innerHTML = "";
+    operatorKeys.forEach(function (k) {
+      var opt = document.createElement("option");
+      opt.value = k.key_hint;
+      opt.textContent = k.name + " (" + k.tier + ", " + k.attack_rate_per_min + "/min)";
+      opEls.attackKeys.appendChild(opt);
+    });
+  }
+
+  // updateTierAvailability is called after both the test catalog AND the
+  // keys list have loaded; the test-card DOM may not exist yet on the
+  // first key load, so it tolerates missing cards.
+  function updateTierAvailability() {
+    if (!testCatalog || !testCatalog.length) return;
+    var presentTiers = Object.create(null);
+    operatorKeys.forEach(function (k) { presentTiers[k.tier] = true; });
+    testCatalog.forEach(function (c) {
+      if (c.manual || !c.required_tier) return;
+      var card = cardByID[c.id];
+      if (!card) return;
+      var btn = card.querySelector(".test-actions .btn");
+      if (!btn) return;
+      var ok = !!presentTiers[c.required_tier];
+      btn.disabled = !ok;
+      btn.title = ok ? "" : "Generate a " + c.required_tier + "-tier key first";
+      card.dataset.tierGate = ok ? "ok" : "blocked";
+      // Swap the badge text so the visual state is obvious at a glance —
+      // "idle" while a tier-key is missing was confusing because the card
+      // looks runnable until you click. "blocked" + the dim styling
+      // signals "go generate the key first".
+      var badge = card.querySelector(".test-badge");
+      if (badge && card.dataset.status === "idle") {
+        badge.textContent = ok ? "idle" : "needs " + c.required_tier;
+        badge.classList.toggle("test-badge-blocked", !ok);
+        badge.classList.toggle("test-badge-idle", ok);
+      }
+    });
+  }
+
+  function revokeOperatorKey(hint, name) {
+    if (!confirm("Revoke key '" + name + "' (hint " + hint + ")? Existing in-flight requests using it will keep working until they finish.")) {
+      return;
+    }
+    fetch("/api/keys/revoke", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({ key_hint: hint }),
+    })
+      .then(function (r) {
+        return r.text().then(function (body) {
+          if (!r.ok) throw new Error(body || "HTTP " + r.status);
+          loadOperatorKeys();
+        });
+      })
+      .catch(function (err) { alert("Revoke failed: " + err.message); });
+  }
+
+  if (opEls.keygenForm) {
+    opEls.keygenForm.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      var name = (opEls.keyName.value || "").trim();
+      var tier = opEls.keyTier.value;
+      if (!name) {
+        opEls.keyName.focus();
+        return;
+      }
+      opEls.btnGenerate.disabled = true;
+      opEls.generateResult.hidden = true;
+      opEls.generateResult.innerHTML = "";
+      fetch("/api/keys/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({ name: name, tier: tier }),
+      })
+        .then(function (r) {
+          return r.text().then(function (body) {
+            if (!r.ok) throw new Error(body || "HTTP " + r.status);
+            return JSON.parse(body);
+          });
+        })
+        .then(function (result) {
+          showGeneratedKey(result);
+          opEls.keyName.value = "";
+          loadOperatorKeys();
+        })
+        .catch(function (err) { alert("Generate failed: " + err.message); })
+        .then(function () { opEls.btnGenerate.disabled = false; });
+    });
+  }
+
+  function showGeneratedKey(result) {
+    if (!opEls.generateResult) return;
+    opEls.generateResult.innerHTML = "";
+    var hdr = document.createElement("div");
+    hdr.className = "op-generate-header";
+    hdr.textContent = "Key generated — save these now (shown once):";
+    opEls.generateResult.appendChild(hdr);
+    opEls.generateResult.appendChild(secretRow("API key", result.key));
+    opEls.generateResult.appendChild(secretRow("Webhook secret", result.webhook_secret));
+
+    var meta = document.createElement("p");
+    meta.className = "hint";
+    meta.textContent = "name=" + result.name + "  tier=" + result.tier + "  hint=" + result.key_hint + "  rate=" + result.attack_rate_per_min + "/min";
+    opEls.generateResult.appendChild(meta);
+
+    var dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.className = "btn";
+    dismiss.textContent = "I've saved them — dismiss";
+    dismiss.addEventListener("click", function () {
+      opEls.generateResult.innerHTML = "";
+      opEls.generateResult.hidden = true;
+    });
+    opEls.generateResult.appendChild(dismiss);
+    opEls.generateResult.hidden = false;
+  }
+
+  function secretRow(label, value) {
+    var row = document.createElement("div");
+    row.className = "op-secret-row";
+    var lab = document.createElement("span");
+    lab.className = "op-secret-label";
+    lab.textContent = label;
+    var code = document.createElement("code");
+    code.className = "op-secret-value";
+    code.textContent = value;
+    var copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "btn btn-link";
+    copy.textContent = "copy";
+    copy.addEventListener("click", function () {
+      // navigator.clipboard requires a secure context; the page is on
+      // 127.0.0.1 so it qualifies, but in case the browser refuses we
+      // surface the failure instead of pretending the copy succeeded.
+      if (!navigator.clipboard) { copy.textContent = "(clipboard unavailable)"; return; }
+      navigator.clipboard.writeText(value).then(
+        function () {
+          var was = copy.textContent;
+          copy.textContent = "copied!";
+          setTimeout(function () { copy.textContent = was; }, 1500);
+        },
+        function () { copy.textContent = "copy failed"; }
+      );
+    });
+    row.appendChild(lab);
+    row.appendChild(code);
+    row.appendChild(copy);
+    return row;
+  }
+
+  // ---------- attack lifecycle (polling status) ---------------------------
+
+  var ATTACK_POLL_IDLE = 3000;     // ms — gentle when nothing's happening
+  var ATTACK_POLL_RUNNING = 1000;  // ms — visible countdown when running
+  var attackPollTimer = null;
+  var attackPollDelay = ATTACK_POLL_IDLE;
+
+  function pollAttackStatus() {
+    fetch("/api/attack/status")
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (s) {
+        if (!s) return;
+        renderAttackStatus(s);
+      })
+      .catch(function () { /* network hiccup; the next tick retries */ })
+      .then(function () {
+        attackPollTimer = setTimeout(pollAttackStatus, attackPollDelay);
+      });
+  }
+
+  function renderAttackStatus(s) {
+    if (!opEls.stateDot) return;
+    var running = s.state === "running";
+    var stopping = s.state === "stopping";
+    opEls.stateDot.className = "op-state-dot op-state-dot-" + (running ? "running" : stopping ? "stopping" : "idle");
+    opEls.stateText.textContent = s.state;
+    if (running) {
+      attackPollDelay = ATTACK_POLL_RUNNING;
+      opEls.stateDetail.textContent = "elapsed " + (s.elapsed_seconds || 0) + "s / " + (s.duration_seconds || 0) + "s — keys " + (s.key_hints || []).join(",");
+      opEls.btnAttackStart.disabled = true;
+      opEls.btnAttackStop.disabled = false;
+    } else {
+      attackPollDelay = ATTACK_POLL_IDLE;
+      opEls.stateDetail.textContent = stopping ? "(draining…)" : "";
+      opEls.btnAttackStart.disabled = false;
+      opEls.btnAttackStop.disabled = !stopping;
+    }
+  }
+
+  if (opEls.attackForm) {
+    opEls.attackForm.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      var duration = parseInt(opEls.attackDuration.value, 10);
+      if (!duration || duration < 1) {
+        opEls.attackDuration.focus();
+        return;
+      }
+      var picks = [];
+      // Only collect hints when the user actually selected something.
+      // Empty selection means "use all keys" on the backend, which is the
+      // common case for a quick start.
+      if (opEls.attackKeys && opEls.attackKeys.selectedOptions) {
+        for (var i = 0; i < opEls.attackKeys.selectedOptions.length; i++) {
+          picks.push(opEls.attackKeys.selectedOptions[i].value);
+        }
+      }
+      opEls.btnAttackStart.disabled = true;
+      fetch("/api/attack/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify({ duration_seconds: duration, key_hints: picks }),
+      })
+        .then(function (r) {
+          return r.text().then(function (body) {
+            if (!r.ok) throw new Error(body || "HTTP " + r.status);
+            return JSON.parse(body);
+          });
+        })
+        .then(renderAttackStatus)
+        .catch(function (err) {
+          alert("Start failed: " + err.message);
+          opEls.btnAttackStart.disabled = false;
+        });
+    });
+  }
+
+  if (opEls.btnAttackStop) {
+    opEls.btnAttackStop.addEventListener("click", function () {
+      opEls.btnAttackStop.disabled = true;
+      fetch("/api/attack/stop", { method: "POST" })
+        .then(function (r) { return r.json(); })
+        .then(renderAttackStatus)
+        .catch(function (err) { alert("Stop failed: " + err.message); });
+    });
+  }
+
+  loadOperatorKeys();
+  pollAttackStatus();
 
   // ---------- scaling panel ------------------------------------------------
   //

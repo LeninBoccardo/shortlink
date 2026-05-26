@@ -21,6 +21,66 @@
     </div>
   </header>
 
+  <section class="panel" id="panel-operator">
+    <h2>
+      Operator panel
+      <span class="hint">generate keys + control the attack</span>
+    </h2>
+    <div class="operator-grid">
+      <div class="operator-card" id="operator-keys">
+        <h3>Keys</h3>
+        <table class="op-key-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Tier</th>
+              <th>Hint</th>
+              <th class="col-num">Rate/min</th>
+              <th><span class="sr-only">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="op-key-tbody">
+            <tr class="empty"><td colspan="5">Loading keys…</td></tr>
+          </tbody>
+        </table>
+        <form id="op-keygen-form" class="op-form">
+          <label>Name <input type="text" id="op-key-name" placeholder="e.g. demo-pro" required maxlength="60" /></label>
+          <label>Tier
+            <select id="op-key-tier">
+              <option value="free">free (10/min)</option>
+              <option value="pro" selected>pro (60/min)</option>
+              <option value="unlimited">unlimited (200/min)</option>
+            </select>
+          </label>
+          <button type="submit" class="btn" id="op-btn-generate">Generate</button>
+        </form>
+        <div id="op-generate-result" class="op-generate-result" hidden></div>
+      </div>
+
+      <div class="operator-card" id="operator-attack">
+        <h3>Attack</h3>
+        <div class="op-attack-status">
+          <span class="op-state-dot op-state-dot-idle" id="op-state-dot"></span>
+          <span id="op-state-text">idle</span>
+          <span id="op-state-detail" class="op-state-detail"></span>
+        </div>
+        <form id="op-attack-form" class="op-form">
+          <label>Duration (seconds)
+            <input type="number" id="op-attack-duration" min="1" max="3600" value="60" />
+          </label>
+          <label>Keys
+            <select id="op-attack-keys" multiple size="4"></select>
+            <span class="hint op-attack-hint">Ctrl-click to select multiple, or none = all</span>
+          </label>
+          <div class="op-attack-buttons">
+            <button type="submit" class="btn" id="op-btn-attack-start">Start attack</button>
+            <button type="button" class="btn btn-danger" id="op-btn-attack-stop" disabled>Stop</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </section>
+
   <section class="panel" id="panel-tests">
     <h2>
       Test console

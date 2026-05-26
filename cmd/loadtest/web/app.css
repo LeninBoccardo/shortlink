@@ -303,6 +303,205 @@ html, body {
    intended semantic. */
 .test-steps[hidden] { display: none; }
 
+/* Operator panel (Phase B) — keys table on the left, attack controls on the
+   right. The two cards sit in a CSS grid so they reflow to stacked columns
+   on narrow viewports. Internals follow the existing panel/btn/hint
+   conventions so the panel feels at home next to the test console. */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+.operator-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px;
+}
+@media (max-width: 900px) {
+  .operator-grid { grid-template-columns: 1fr; }
+}
+.operator-card {
+  background: var(--bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 12px;
+}
+.operator-card h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+.op-key-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+.op-key-table th,
+.op-key-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--panel-border);
+}
+.op-key-table th {
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.op-key-table tr.empty td {
+  text-align: center;
+  color: var(--text-dim);
+  padding: 12px;
+}
+.op-key-table .col-num { text-align: right; }
+.op-tier {
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+.op-tier-free      { color: var(--text-dim); }
+.op-tier-pro       { color: var(--accent); }
+.op-tier-unlimited { color: var(--yellow); }
+.op-hint { font-family: var(--mono); color: var(--text-dim); }
+.op-action-cell { text-align: right; }
+
+.btn-link {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+}
+.btn-link:hover { text-decoration: underline; }
+.btn-danger { color: var(--red); border-color: var(--red); }
+.btn-danger:disabled { opacity: 0.5; cursor: default; }
+
+.op-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+.op-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.op-form input[type="text"],
+.op-form input[type="number"],
+.op-form select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--panel-border);
+  border-radius: 4px;
+  padding: 5px 8px;
+  font: inherit;
+  min-width: 160px;
+}
+.op-form button { margin-bottom: 1px; }
+
+.op-generate-result {
+  margin-top: 12px;
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--green);
+  border-radius: 4px;
+}
+.op-generate-result[hidden] { display: none; }
+.op-generate-header {
+  font-weight: 600;
+  color: var(--green);
+  margin-bottom: 8px;
+}
+.op-secret-row {
+  display: grid;
+  grid-template-columns: 130px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.op-secret-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.op-secret-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 4px 6px;
+  background: var(--bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 3px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.op-attack-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0 12px;
+  border-bottom: 1px solid var(--panel-border);
+  margin-bottom: 12px;
+}
+.op-state-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.op-state-dot-idle     { background: var(--grey); }
+.op-state-dot-running  { background: var(--green); animation: pulse 1.5s ease-in-out infinite; }
+.op-state-dot-stopping { background: var(--yellow); }
+@keyframes pulse {
+  0%,100% { opacity: 1; }
+  50%     { opacity: 0.4; }
+}
+.op-state-detail {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.op-attack-hint { font-size: 11px; color: var(--text-dim); }
+.op-attack-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* Tier-gated test cards: when the required tier isn't in the key set, the
+   Run button is disabled and the card shows a "needs <tier>" badge so
+   the user knows to generate that key before clicking. The dim + the
+   amber badge make it unambiguous at a glance. */
+.test-card[data-tier-gate="blocked"] { opacity: 0.6; }
+.test-card[data-tier-gate="blocked"] .test-actions .btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.test-badge-blocked {
+  background: rgba(210, 153, 34, 0.18);
+  color: var(--yellow);
+  border: 1px solid var(--yellow);
+}
+
 /* Scaling panel (Phase 3) — per-service resource cards.
    Auto-fill grid sized for laptop screens; each card shows CPU + memory
    bars filled to (current / allocated) with warm/hot thresholds at 50/80 %. */

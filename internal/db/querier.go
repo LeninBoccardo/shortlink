@@ -65,6 +65,14 @@ type Querier interface {
 	// pair, halving the PG round-trips on the redirect path. Named params dodge
 	// the slug-column ambiguity between hits.slug and short_urls.slug.
 	RecordHit(ctx context.Context, arg RecordHitParams) error
+	// Soft-delete used by the operator UI when removing a key. NOW()-stamps
+	// revoked_at so existing requests authenticated under this key keep
+	// working until they finish, while every subsequent GetAPIKeyByHash (which
+	// filters on revoked_at IS NULL) yields ErrNoRows. The validator cache's
+	// 60-second TTL is the upper bound on how long a revoked key still
+	// authenticates after the click. The hint guard avoids a UI accidentally
+	// revoking by id and racing with concurrent operator actions.
+	RevokeAPIKeyByHint(ctx context.Context, keyHint string) (int64, error)
 	// Bumps last_used_at; the gateway throttles how often this runs via a Redis
 	// marker (SPEC §9 / LAST_USED_THROTTLE). The revoked_at IS NULL guard
 	// prevents the async toucher from bumping a key that was revoked between

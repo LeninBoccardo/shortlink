@@ -1,10 +1,14 @@
-// Command loadtest is the multi-key vegeta attack runner (SPEC §4.4 / §11):
-// it loads keys.yaml, spins up one vegeta.Attacker per key against the API
-// gateway, hosts a built-in HMAC-verifying webhook sink on :8091 so the
-// pipeline closes end-to-end, emits attack_started / attack_complete events
-// to the observer hub, and from M6 serves the showcase frontend at :8090
-// (embedded into the binary via go:embed). After the attack finishes the
-// runner stays up until SIGINT so the user can study the final dashboard.
+// Command loadtest hosts the showcase frontend at :8090 and the multi-key
+// vegeta attack engine (SPEC §4.4 / §11). Originally a one-shot CLI that
+// fired an attack at boot and stayed up for inspection; from the v1 operator-
+// panel work it is now driven by the embedded UI — POST /api/keys/generate
+// to provision a key, POST /api/attack/start to begin, POST /api/attack/stop
+// to halt. The boot-time auto-attack is gone: the UI is the canonical entry
+// point and a CLI flag default is too easy to start by accident.
+//
+// The binary still ships its built-in HMAC-verifying webhook sink on :8091
+// so the pipeline closes end-to-end during an attack, and still emits
+// attack_started / attack_complete events to the observer.
 package main
 
 import (
@@ -16,14 +20,21 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/leninboccardo/shortlink/internal/db"
 	"github.com/leninboccardo/shortlink/internal/events"
-	"github.com/leninboccardo/shortlink/internal/keysfile"
+	"github.com/leninboccardo/shortlink/internal/storage"
 )
 
-const shutdownGrace = 5 * time.Second
+const (
+	shutdownGrace     = 5 * time.Second
+	loadtestPoolSize  = 2 // small — only keygen + revoke touch the DB
+	startupCtxTimeout = 10 * time.Second
+)
 
 type runConfig struct {
 	keysPath      string
@@ -36,6 +47,8 @@ type runConfig struct {
 	pagePort      int
 	sinkURL       string
 	sinkPort      int
+	databaseURL   string
+	containerMode bool
 }
 
 func main() {
@@ -51,29 +64,67 @@ func parseFlags() runConfig {
 	flag.StringVar(&cfg.keysPath, "keys", "config/keys.yaml", "path to keys.yaml")
 	flag.StringVar(&cfg.limitsPath, "limits", "config/local-limits.yaml", "path to local-limits.yaml (scaling panel source)")
 	flag.StringVar(&cfg.target, "target", "http://localhost:8080", "API gateway base URL")
-	flag.DurationVar(&cfg.duration, "duration", 60*time.Second, "attack duration")
+	flag.DurationVar(&cfg.duration, "duration", 60*time.Second, "default attack duration (POST /api/attack/start can override)")
 	flag.StringVar(&cfg.observerURL, "observer", "http://localhost:9090", "observer hub URL")
 	flag.StringVar(&cfg.grafanaURL, "grafana", "http://localhost:3000", "Grafana base URL (M6 showcase page)")
 	flag.StringVar(&cfg.prometheusURL, "prometheus", "http://localhost:9091", "Prometheus base URL (test console targets-up check)")
 	flag.IntVar(&cfg.pagePort, "port", 8090, "showcase page port")
 	flag.StringVar(&cfg.sinkURL, "sink-url", "http://localhost:8091/sink", "webhook sink URL advertised to the API")
 	flag.IntVar(&cfg.sinkPort, "sink-port", 8091, "webhook sink listen port")
+	// DATABASE_URL falls back to the env default the api/worker use so a
+	// host-mode loadtest doesn't need its own flag plumbing in the setup
+	// scripts. In compose.full mode, deploy/docker-compose.full.yml sets
+	// DATABASE_URL on the loadtest service to the in-network pgbouncer.
+	flag.StringVar(&cfg.databaseURL, "database-url", envOr("DATABASE_URL", "postgres://shortlink:shortlink@localhost:16432/shortlink?sslmode=disable"), "Postgres DSN for keygen + revoke")
 	flag.Parse()
+	cfg.containerMode = envBool("CONTAINER_MODE")
 	return cfg
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func envBool(key string) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if v == "" {
+		return false
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false
+	}
+	return b
 }
 
 func run(cfg runConfig) error {
 	log := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(log)
 
-	keys, err := keysfile.Load(cfg.keysPath)
+	// Boot the key registry from keys.yaml. A missing file is OK -- it just
+	// means the operator panel starts empty and the user clicks Generate
+	// before running any /shorten test.
+	registry, err := newKeyRegistry(cfg.keysPath)
 	if err != nil {
 		return err
 	}
-	if len(keys.Keys) == 0 {
-		return fmt.Errorf("%s contains no keys", cfg.keysPath)
+	log.Info("loaded keys", "count", len(registry.Snapshot()), "path", cfg.keysPath)
+
+	// DB pool: tiny, only used by the operator panel's keygen + revoke
+	// handlers. Failing to connect here aborts startup — without DB access
+	// the UI's headline feature is broken; better to surface that loudly
+	// than to boot a half-functional showcase page.
+	startupCtx, cancelStartup := context.WithTimeout(context.Background(), startupCtxTimeout)
+	defer cancelStartup()
+	pool, err := storage.NewPool(startupCtx, cfg.databaseURL, loadtestPoolSize)
+	if err != nil {
+		return fmt.Errorf("connect postgres: %w", err)
 	}
-	log.Info("loaded keys", "count", len(keys.Keys), "path", cfg.keysPath)
+	defer pool.Close()
+	queries := db.New(pool)
 
 	emitter := events.NewEmitter(events.Config{
 		URL:    cfg.observerURL,
@@ -83,10 +134,13 @@ func run(cfg runConfig) error {
 	})
 	defer emitter.Close(2 * time.Second)
 
-	sink := newSink(keys, log)
-	sinkSrv := &http.Server{
+	// The sink resolves HMAC secrets through the registry on every delivery
+	// (registry.SecretByHint), so UI-generated keys whose first webhook
+	// arrives mid-session are still verified — no rebuild-on-mutate dance.
+	sinkSrv := newSink(registry, log)
+	sinkHTTP := &http.Server{
 		Addr:              fmt.Sprintf(":%d", cfg.sinkPort),
-		Handler:           sink.routes(),
+		Handler:           sinkSrv.routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -94,8 +148,8 @@ func run(cfg runConfig) error {
 	}
 	sinkErr := make(chan error, 1)
 	go func() {
-		log.Info("webhook sink listening", "addr", sinkSrv.Addr)
-		if err := sinkSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Info("webhook sink listening", "addr", sinkHTTP.Addr)
+		if err := sinkHTTP.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			sinkErr <- err
 		}
 	}()
@@ -105,23 +159,21 @@ func run(cfg runConfig) error {
 		return err
 	}
 	pageBase := fmt.Sprintf("http://localhost:%d", cfg.pagePort)
-	tests := newRunner(cfg, keys, cfg.prometheusURL, pageBase)
-	// Phase 3: load the scaling catalog from local-limits.yaml. A missing
-	// file degrades to "no scaling panel" rather than aborting, so a clone
-	// without the limits config (and no `cmd/limits render` run) still
-	// boots the rest of the page.
+	tests := newRunner(cfg, registry, cfg.prometheusURL, pageBase)
 	scaling, err := loadScalingCatalog(cfg.limitsPath, cfg.prometheusURL)
 	if err != nil {
 		log.Warn("scaling panel disabled", "error", err)
 		scaling = nil
 	}
-	// Bind to loopback only: the page exposes /tests/run/* (which shells
-	// `go test` + testcontainers) and /api/scaling-stats (which shells
-	// `docker stats`), neither of which is authenticated. Sink stays on all
-	// interfaces — container-mode worker reaches it via host.docker.internal.
-	pageSrv := &http.Server{
+	control := newControlServer(registry, queries, cfg, log, emitter, sinkSrv)
+
+	// Bind to loopback only: /api/keys/generate is an unauthenticated
+	// keygen oracle, /api/attack/start triggers a vegeta storm, and
+	// /tests/run/* shells `go test`. Same threat model as before -- adding
+	// the new endpoints didn't change it.
+	pageHTTP := &http.Server{
 		Addr:              fmt.Sprintf("127.0.0.1:%d", cfg.pagePort),
-		Handler:           page.routes(tests, scaling),
+		Handler:           page.routes(tests, scaling, control),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -129,87 +181,31 @@ func run(cfg runConfig) error {
 	}
 	pageErr := make(chan error, 1)
 	go func() {
-		log.Info("showcase page listening", "addr", pageSrv.Addr,
-			"observer", cfg.observerURL, "grafana", cfg.grafanaURL)
-		if err := pageSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Info("showcase page listening", "addr", pageHTTP.Addr,
+			"observer", cfg.observerURL, "grafana", cfg.grafanaURL,
+			"container_mode", cfg.containerMode)
+		if err := pageHTTP.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			pageErr <- err
 		}
 	}()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
-
-	attackCtx, cancelAttack := context.WithTimeout(context.Background(), cfg.duration)
-	defer cancelAttack()
-
-	// shutdown closes when the user signals (or a server dies). The watcher
-	// goroutine cancels the attack early on signal/error, then signals via
-	// close(shutdown). After the attack finishes naturally on duration, the
-	// main goroutine waits on shutdown so the page stays up until the user
-	// is done browsing the final state.
-	shutdown := make(chan struct{})
-	go func() {
-		defer close(shutdown)
-		select {
-		case sig := <-stop:
-			log.Info("interrupted, cancelling attack", "signal", sig.String())
-			cancelAttack()
-		case err := <-sinkErr:
-			log.Error("sink server failed, cancelling attack", "error", err)
-			cancelAttack()
-		case err := <-pageErr:
-			log.Error("page server failed, cancelling attack", "error", err)
-			cancelAttack()
-		case <-attackCtx.Done():
-			// Attack finished on its own. Wait for the user (or a server
-			// failure) before tearing the dashboard down.
-			select {
-			case sig := <-stop:
-				log.Info("signal received post-attack, shutting down", "signal", sig.String())
-			case err := <-sinkErr:
-				log.Error("sink server failed post-attack", "error", err)
-			case err := <-pageErr:
-				log.Error("page server failed post-attack", "error", err)
-			}
-		}
-	}()
-
-	emitter.Emit(events.Event{
-		Level:   events.LevelInfo,
-		Kind:    events.KindAttackStarted,
-		Message: fmt.Sprintf("attack started: %d profiles, duration=%s, target=%s", len(keys.Keys), cfg.duration, cfg.target),
-		Meta: map[string]any{
-			"duration_s": int(cfg.duration.Seconds()),
-			"target":     cfg.target,
-			"profiles":   len(keys.Keys),
-			"sink_url":   cfg.sinkURL,
-		},
-	})
-
-	results := runAttacks(attackCtx, keys, cfg, log)
-
-	delivered := sink.counts()
-	rejected := sink.rejectedCounts()
-	printSummary(results, delivered)
-
-	emitter.Emit(events.Event{
-		Level:   events.LevelInfo,
-		Kind:    events.KindAttackComplete,
-		Message: fmt.Sprintf("attack complete: %d profiles", len(results)),
-		Meta:    summaryMeta(results, delivered, rejected),
-	})
-
-	log.Info("attack done; showcase page still live — Ctrl-C to exit",
-		"page", fmt.Sprintf("http://localhost:%d/", cfg.pagePort))
-
-	<-shutdown
+	select {
+	case sig := <-stop:
+		log.Info("interrupted, shutting down", "signal", sig.String())
+	case err := <-sinkErr:
+		log.Error("sink server failed", "error", err)
+	case err := <-pageErr:
+		log.Error("page server failed", "error", err)
+	}
 
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer shutCancel()
-	if err := sinkSrv.Shutdown(shutCtx); err != nil {
+	if err := sinkHTTP.Shutdown(shutCtx); err != nil {
 		log.Warn("sink shutdown", "error", err)
 	}
-	if err := pageSrv.Shutdown(shutCtx); err != nil {
+	if err := pageHTTP.Shutdown(shutCtx); err != nil {
 		log.Warn("page shutdown", "error", err)
 	}
 	return nil

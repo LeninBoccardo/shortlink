@@ -114,11 +114,12 @@ func buildCSP(html []byte, observerURL, grafanaURL string) (string, error) {
 }
 
 // routes returns an http.Handler that serves the rendered index at /, the
-// embedded web/ assets, the test-console /tests/* endpoints, and the Phase 3
-// scaling panel's /api/scaling-{services,stats}. All specific routes must be
-// registered BEFORE the "/" catch-all or http.ServeMux would shadow them with
-// the asset handler.
-func (p *pageServer) routes(testRunner *runner, scaling *scalingCatalog) http.Handler {
+// embedded web/ assets, the test-console /tests/* endpoints, the Phase 3
+// scaling panel's /api/scaling-{services,stats}, and the operator-panel
+// /api/keys/* + /api/attack/* endpoints. All specific routes must be
+// registered BEFORE the "/" catch-all or http.ServeMux would shadow them
+// with the asset handler.
+func (p *pageServer) routes(testRunner *runner, scaling *scalingCatalog, control *controlServer) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
@@ -129,6 +130,9 @@ func (p *pageServer) routes(testRunner *runner, scaling *scalingCatalog) http.Ha
 	if scaling != nil {
 		mux.HandleFunc("/api/scaling-services", scaling.servicesHandler)
 		mux.HandleFunc("/api/scaling-stats", scaling.statsHandler)
+	}
+	if control != nil {
+		control.attachRoutes(mux)
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Headers shared by both the templated index and the static-asset

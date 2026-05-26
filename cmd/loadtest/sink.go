@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/leninboccardo/shortlink/internal/keysfile"
 	"github.com/leninboccardo/shortlink/internal/webhook"
 )
 
@@ -17,9 +16,13 @@ import (
 // looks up the key by the X-ShortLink-Key-Hint header, verifies the
 // X-ShortLink-Signature HMAC against the request body, and counts
 // success/rejection per key hint. The counters feed the post-attack summary.
+//
+// Resolution goes through the registry (not a boot-time map) so a UI-
+// generated key whose first webhook arrives mid-session is still verified
+// against the right secret.
 type sink struct {
-	log     *slog.Logger
-	hintMap map[string]string // key_hint -> webhook_secret
+	log  *slog.Logger
+	keys *keyRegistry
 
 	mu        sync.Mutex
 	delivered map[string]int // key_hint -> count of verified deliveries
@@ -32,14 +35,10 @@ const (
 	maxBody    = 64 << 10
 )
 
-func newSink(keys *keysfile.File, log *slog.Logger) *sink {
-	hintMap := make(map[string]string, len(keys.Keys))
-	for _, e := range keys.Keys {
-		hintMap[hintOf(e.Key)] = e.WebhookSecret
-	}
+func newSink(keys *keyRegistry, log *slog.Logger) *sink {
 	return &sink{
 		log:       log,
-		hintMap:   hintMap,
+		keys:      keys,
 		delivered: make(map[string]int),
 		rejected:  make(map[string]int),
 	}
@@ -92,7 +91,7 @@ func (s *sink) verify(hint, sig string, body []byte) error {
 	if hint == "" {
 		return errors.New("missing key hint header")
 	}
-	secret, ok := s.hintMap[hint]
+	secret, ok := s.keys.SecretByHint(hint)
 	if !ok {
 		return errors.New("unknown key hint")
 	}

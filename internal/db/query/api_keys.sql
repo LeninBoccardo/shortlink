@@ -22,3 +22,14 @@ SELECT * FROM api_keys WHERE id = $1;
 -- otherwise a revoked key would show a fresh last_used_at in admin views,
 -- confusing audit trails.
 UPDATE api_keys SET last_used_at = NOW() WHERE id = $1 AND revoked_at IS NULL;
+
+-- name: RevokeAPIKeyByHint :execrows
+-- Soft-delete used by the operator UI when removing a key. NOW()-stamps
+-- revoked_at so existing requests authenticated under this key keep
+-- working until they finish, while every subsequent GetAPIKeyByHash (which
+-- filters on revoked_at IS NULL) yields ErrNoRows. The validator cache's
+-- 60-second TTL is the upper bound on how long a revoked key still
+-- authenticates after the click. The hint guard avoids a UI accidentally
+-- revoking by id and racing with concurrent operator actions.
+UPDATE api_keys SET revoked_at = NOW()
+WHERE key_hint = $1 AND revoked_at IS NULL;

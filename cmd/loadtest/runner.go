@@ -28,8 +28,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/leninboccardo/shortlink/internal/keysfile"
 )
 
 // testCase is one entry in the catalog. `run` is nil for manual-only entries;
@@ -41,7 +39,13 @@ type testCase struct {
 	Description string   `json:"description"`
 	Manual      bool     `json:"manual"`
 	Steps       []string `json:"steps,omitempty"`
-	run         func(context.Context) *testResult
+	// RequiredTier is the key tier the case needs in the registry; the UI
+	// disables Run when no matching key exists ("Generate a free-tier key
+	// first" instead of "test ran but failed for an unrelated reason").
+	// Empty string = no key needed (Prometheus / Grafana / observer probes,
+	// CSP header check, integration-test shell-out, etc.).
+	RequiredTier string `json:"required_tier,omitempty"`
+	run          func(context.Context) *testResult
 }
 
 // testResult is the JSON shape returned by POST /tests/run/{id}. Headers and
@@ -66,7 +70,8 @@ type runner struct {
 	grafanaURL    string // http://localhost:3000
 	prometheusURL string // http://localhost:9091
 	sinkURL       string // http://localhost:8091/sink
-	keys          *keysfile.File
+	keys          *keyRegistry
+	containerMode bool // hides the integration-test card when true
 	client        *http.Client
 	cases         []*testCase
 	byID          map[string]*testCase
@@ -74,7 +79,7 @@ type runner struct {
 
 // newRunner builds the catalog and wires the per-case runtime info. The
 // catalog order here is what the frontend renders top-to-bottom.
-func newRunner(cfg runConfig, keys *keysfile.File, prometheusURL, pageBase string) *runner {
+func newRunner(cfg runConfig, keys *keyRegistry, prometheusURL, pageBase string) *runner {
 	if prometheusURL == "" {
 		prometheusURL = "http://localhost:9091"
 	}
@@ -89,6 +94,7 @@ func newRunner(cfg runConfig, keys *keysfile.File, prometheusURL, pageBase strin
 		prometheusURL: strings.TrimRight(prometheusURL, "/"),
 		sinkURL:       cfg.sinkURL,
 		keys:          keys,
+		containerMode: cfg.containerMode,
 		client: &http.Client{
 			Timeout: 20 * time.Second,
 		},
@@ -144,49 +150,57 @@ func (r *runner) handleRun(w http.ResponseWriter, req *http.Request) {
 // catalog builder
 
 func (r *runner) buildCatalog() []*testCase {
-	return []*testCase{
+	cases := []*testCase{
 		// happy paths -----------------------------------------------------
 		{
 			ID: "shorten-happy-path", Category: "happy", Title: "Shorten — 202 Accepted",
-			Description: "POST /shorten with a pro-tier key + a valid public URL. Expect 202 and a job_id in the body. The webhook delivery follows asynchronously and lands on the loadtest sink.",
-			run:         r.runShortenHappy,
+			Description:  "POST /shorten with a pro-tier key + a valid public URL. Expect 202 and a job_id in the body. The webhook delivery follows asynchronously and lands on the loadtest sink.",
+			RequiredTier: "pro",
+			run:          r.runShortenHappy,
 		},
 		{
 			ID: "custom-slug-and-redirect", Category: "happy", Title: "Custom slug + redirect",
-			Description: "POST /shorten with custom_slug=<random>, wait for the job to finalize, then GET /<slug> and assert 302 with the original URL in Location.",
-			run:         r.runCustomSlugAndRedirect,
+			Description:  "POST /shorten with custom_slug=<random>, wait for the job to finalize, then GET /<slug> and assert 302 with the original URL in Location.",
+			RequiredTier: "pro",
+			run:          r.runCustomSlugAndRedirect,
 		},
 
 		// edge cases ------------------------------------------------------
 		{
 			ID: "bad-api-key", Category: "edge", Title: "Bad API key — 401",
 			Description: "POST /shorten with a bogus X-Api-Key header. Expect 401 + 'missing or invalid API key' body.",
-			run:         r.runBadAPIKey,
+			// No RequiredTier — the test deliberately uses a bogus key.
+			run: r.runBadAPIKey,
 		},
 		{
 			ID: "ssrf-rfc1918", Category: "edge", Title: "SSRF webhook — 422",
-			Description: "POST /shorten with webhook_url=http://10.0.0.99:8080/sink (RFC1918). The api's SSRF guard should reject with 422.",
-			run:         r.runSSRF,
+			Description:  "POST /shorten with webhook_url=http://10.0.0.99:8080/sink (RFC1918). The api's SSRF guard should reject with 422.",
+			RequiredTier: "pro",
+			run:          r.runSSRF,
 		},
 		{
 			ID: "url-blocklist", Category: "edge", Title: "URL blocklist — 422 (audit COV-4)",
-			Description: "POST /shorten with a URL whose host matches URL_BLOCKLIST. Pre-audit-fix this returned 400; SPEC §9 mandates 422. REQUIRES: api restarted with URL_BLOCKLIST=blocked-domain.example.",
-			run:         r.runURLBlocklist,
+			Description:  "POST /shorten with a URL whose host matches URL_BLOCKLIST. Pre-audit-fix this returned 400; SPEC §9 mandates 422. REQUIRES: api restarted with URL_BLOCKLIST=blocked-domain.example.",
+			RequiredTier: "pro",
+			run:          r.runURLBlocklist,
 		},
 		{
 			ID: "rate-limit-burst", Category: "edge", Title: "Rate limit burst — 429s",
-			Description: "Burst 12× POST /shorten with a free-tier key (default 10 req/min). Expect at least one 429 in the response codes.",
-			run:         r.runRateLimitBurst,
+			Description:  "Burst 12× POST /shorten with a free-tier key (default 10 req/min). Expect at least one 429 in the response codes.",
+			RequiredTier: "free",
+			run:          r.runRateLimitBurst,
 		},
 		{
 			ID: "rate-limit-headers", Category: "edge", Title: "Rate limit headers present",
-			Description: "Trigger a 429 (assumes burst test ran first or budget already exhausted), then assert X-RateLimit-Limit / X-RateLimit-Remaining / X-RateLimit-Reset / Retry-After are all present.",
-			run:         r.runRateLimitHeaders,
+			Description:  "Trigger a 429 (assumes burst test ran first or budget already exhausted), then assert X-RateLimit-Limit / X-RateLimit-Remaining / X-RateLimit-Reset / Retry-After are all present.",
+			RequiredTier: "free",
+			run:          r.runRateLimitHeaders,
 		},
 		{
 			ID: "custom-slug-conflict", Category: "edge", Title: "Custom slug conflict — 409",
-			Description: "POST /shorten twice with the same random custom_slug. Expect 202 then 409 + 'custom slug already taken'.",
-			run:         r.runSlugConflict,
+			Description:  "POST /shorten twice with the same random custom_slug. Expect 202 then 409 + 'custom slug already taken'.",
+			RequiredTier: "pro",
+			run:          r.runSlugConflict,
 		},
 
 		// observability ---------------------------------------------------
@@ -211,11 +225,6 @@ func (r *runner) buildCatalog() []*testCase {
 			ID: "page-csp-headers", Category: "audit", Title: "Page CSP / nosniff / frame-deny (S4)",
 			Description: "GET / on this very page server, assert Content-Security-Policy, X-Content-Type-Options, X-Frame-Options, Referrer-Policy are all present.",
 			run:         r.runCSPHeaders,
-		},
-		{
-			ID: "integration-test", Category: "audit", Title: "End-to-end integration test",
-			Description: "Run `go test -tags integration -timeout 5m ./tests/...`. Spins up testcontainers Postgres+Redis+MinIO, builds api+worker fresh, asserts the four subtests. Takes ~8s after first container pull.",
-			run:         r.runIntegrationTest,
 		},
 
 		// manual-only cards ----------------------------------------------
@@ -288,6 +297,32 @@ func (r *runner) buildCatalog() []*testCase {
 			Manual:      true,
 		},
 	}
+
+	// integration-test card is host-mode only. In compose.full / k8s the
+	// loadtest container has neither the Go toolchain nor the Docker socket
+	// that testcontainers-go needs to spin up Postgres+Redis+MinIO; bundling
+	// either would bloat the image from ~20MB to ~400MB and require a
+	// privileged mount. Drop the card from /tests/list entirely so the UI
+	// doesn't render an always-failing button.
+	if !r.containerMode {
+		integration := &testCase{
+			ID: "integration-test", Category: "audit", Title: "End-to-end integration test",
+			Description: "Run `go test -tags integration -timeout 5m ./tests/...`. Spins up testcontainers Postgres+Redis+MinIO, builds api+worker fresh, asserts the four subtests. Takes ~8s after first container pull.",
+			run:         r.runIntegrationTest,
+		}
+		// Insert before the manual-cards block so the rendered order
+		// matches what users saw pre-refactor.
+		insertAt := 0
+		for i, c := range cases {
+			if c.Manual {
+				insertAt = i
+				break
+			}
+		}
+		cases = append(cases[:insertAt], append([]*testCase{integration}, cases[insertAt:]...)...)
+	}
+
+	return cases
 }
 
 // ----------------------------------------------------------------------------
@@ -717,12 +752,10 @@ func (r *runner) keyByTier(tier string) (string, *testResult) {
 	if r.keys == nil {
 		return "", &testResult{Expected: "tier=" + tier + " key from keys.yaml", Actual: "keys file not loaded", ErrorClass: "config"}
 	}
-	for _, k := range r.keys.Keys {
-		if strings.EqualFold(k.Tier, tier) {
-			return k.Key, nil
-		}
+	if entry, ok := r.keys.FindByTier(tier); ok {
+		return entry.Key, nil
 	}
-	return "", &testResult{Expected: "tier=" + tier + " key from keys.yaml", Actual: "no " + tier + "-tier key configured — run `make keys`", ErrorClass: "config"}
+	return "", &testResult{Expected: "tier=" + tier + " key from keys.yaml", Actual: "no " + tier + "-tier key configured — click Generate in the operator panel or run `make keys`", ErrorClass: "config"}
 }
 
 func passWhenStatus(got, want int, expected string, body []byte, hdrs map[string]string) *testResult {

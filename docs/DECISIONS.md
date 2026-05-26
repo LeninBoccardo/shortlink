@@ -326,12 +326,15 @@ without the M7 stack up.
 
 ## 10. Local stack & ports
 
-### docker-compose holds **infra only**; api/worker/observer run on the host (M1+)
+### docker-compose holds **infra only**; api/worker/observer run on the host (M1+, dev mode)
 Compose runs Postgres + MinIO + Redis (M2), plus Prometheus + Grafana (M7).
 `make run-api` / `run-worker` / `run-observer` run on the host with `go run`
 for fast iteration. **Why:** in-loop edits don't require image rebuilds.
 **Consequence:** `SSRF_ALLOWLIST=host.docker.internal,localhost,127.0.0.1`
-needed locally so workers can reach the loadtest sink.
+needed locally so workers can reach the loadtest sink. **Post-M9:** this is
+now the **dev mode** half of a two-mode local-dev story; the **full mode**
+puts every binary in a container — see §13 "Two compose files instead of
+one" for the rationale and the showcase-vs-iteration split.
 
 ### Postgres on host **55432** (M1)
 The dev machine runs native Postgres 16/17/18 on 5432–5434.
@@ -360,10 +363,17 @@ reaches the sink via `localhost:8091` (allowed by SSRF).
 
 ## 11. Operational decisions worth recording
 
-### `config/keys.yaml` is gitignored — never committed (M1)
-Contains real API keys + per-key webhook HMAC secrets. `make keys`
-regenerates it. **Known issue:** re-runs accumulate valid keys in the DB
-without tracking the previous file's keys (AUDIT.md S1).
+### `config/keys.yaml` is gitignored — never committed (M1, post-M9 extended)
+Contains real API keys + per-key webhook HMAC secrets. **Two writers now:**
+the original `cmd/keygen` CLI (`make keys`, batch-overwrites with three
+default-tier keys) AND the operator panel's `POST /api/keys/generate`
+endpoint (single-key append-and-write per click — see §13 "keys.yaml is
+canonical"). Both go through `internal/keysfile.Write`, which writes
+atomically via tempfile + rename, so a crashed Generate doesn't leave a
+truncated file. **Known issue:** `make keys` still overwrites the whole
+file, so it nukes any keys the operator generated via the UI between
+runs (AUDIT.md S1 covers the broader "re-runs accumulate untracked DB
+keys" angle).
 
 ### No log aggregator in v1 (per SPEC §10/§15)
 The observer hub *replaces* a log aggregator for the showcase. If raw log

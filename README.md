@@ -29,7 +29,7 @@ flowchart LR
     MinIO[(MinIO<br/>QR PNG bucket)]
     WHC[Customer<br/>Webhook URL]
     Observer[Observer Hub<br/>cmd/observer :9090<br/>ingest + WebSocket]
-    Loadtest[Load Test Runner<br/>cmd/loadtest :8090<br/>showcase page]
+    Loadtest[Load Test Runner<br/>cmd/loadtest :8090<br/>showcase + operator panel]
     Prometheus[Prometheus<br/>:9091]
     Grafana[Grafana<br/>:3000]
 
@@ -160,7 +160,7 @@ fetchable from the signed URL.
 | [cmd/api/](cmd/api/) | Gateway — authenticate, rate-limit, reserve, enqueue |
 | [cmd/worker/](cmd/worker/) | Queue consumer — shorten + webhook handlers + sweeper |
 | [cmd/observer/](cmd/observer/) | Observer hub — `/ingest`, WebSocket `/stream`, `/metrics` |
-| [cmd/loadtest/](cmd/loadtest/) | Vegeta load-test runner + showcase HTTP page |
+| [cmd/loadtest/](cmd/loadtest/) | Vegeta load-test runner + showcase HTTP page + operator panel (keygen / attack lifecycle / test console) |
 | [cmd/migrate/](cmd/migrate/) | goose migration runner |
 | [cmd/keygen/](cmd/keygen/) | API key + webhook secret provisioning |
 | [internal/](internal/) | Domain packages (auth, shortener, qrcode, queue, webhook, sweeper, metrics, events, observer, …) |
@@ -189,6 +189,7 @@ recorded in [docs/AUDIT.md](docs/AUDIT.md).
 | M7 | Observability stack | `internal/metrics` collectors (jobs, QR, rate-limit, webhook, events), Prometheus + Grafana in compose with provisioned dashboards, showcase iframes wired |
 | M8 | Kubernetes + deployment | One multi-stage Dockerfile, Helm chart under `deploy/k8s/`, PgBouncer Deployment, Migration Job as Helm hook, KEDA ScaledObject, SSRF egress NetworkPolicy |
 | M9 | Polish | This README, end-to-end integration test against testcontainers |
+| post-M9 | Operator panel + showcase/dev split | Loadtest hosts a `/api/keys/{generate,revoke}` + `/api/attack/{start,stop,status}` control plane (vegeta no longer auto-starts at boot); browser-driven keygen + attack lifecycle + tier-gated test cards. `docker-compose.full.yml` adds api/worker/observer/loadtest as containers for the "no Go toolchain" demo path; Helm chart grows a single-replica loadtest Deployment + 10Mi PVC for `keys.yaml` durability across rollouts |
 
 ---
 

@@ -1,17 +1,34 @@
 # Manual Testing Guide
 
 A runnable walkthrough that exercises every feature shipped through M1–M9
-plus the post-M9 audit fixes. Work top-to-bottom or jump to a specific
-section — each block notes what it depends on.
+plus the post-M9 audit fixes AND the operator-panel work (UI-driven
+keygen + attack lifecycle, both compose modes, loadtest in k8s). Work
+top-to-bottom or jump to a specific section — each block notes what it
+depends on.
 
 ## 0. Prerequisites
 
+This repo has **two local-dev modes**. Pick one before continuing:
+
+- **Dev mode** (the rest of this guide assumes this): `make dev` brings
+  up infra in compose, you run api/worker/observer/loadtest on the host
+  via `make run-*`. Fast code iteration. Needs Go 1.26.
+- **Full mode** (`make full`): everything runs in containers. No Go
+  toolchain required. Trades iteration speed for "one command and a
+  browser tab". See §6.5 for the full-mode equivalent of §3–§6.
+
+The §7 onward sections (showcase tour, API edge cases, observability
+checks, integration test) work identically against either mode — the
+loadtest binary's HTTP surface is the same in both.
+
+Common requirements:
+
 - Docker Desktop (Windows/Mac) or Docker Engine (Linux), running
-- Go **1.26** on PATH (`go version`)
+- Go **1.26** on PATH (`go version`) — dev mode only
 - `make`, `curl`, `git` available
-- Four terminals minimum (or use a tmux/zellij/Windows Terminal tab set):
-  one each for **api**, **worker**, **observer**, and **loadtest**, plus
-  one free for `curl` / inspection
+- Four terminals minimum if you're in dev mode (one each for
+  **api**, **worker**, **observer**, **loadtest**, plus one free for
+  `curl` / inspection). Full mode needs only one terminal.
 - (Optional, only for §11) `kind` and `helm` for the k8s walkthrough
 
 If you just want a single one-shot smoke test, jump to **§10 Integration
@@ -134,36 +151,126 @@ connection problems surface there immediately.
 
 ## 6. Start the load-test runner
 
-The runner does double duty as your webhook sink. Use a long duration so
-it stays up for manual curling.
+The runner does triple duty: it serves the showcase page + operator
+panel at `:8090`, hosts the webhook sink at `:8091`, and runs vegeta
+attacks **on demand** (no auto-start at boot since the operator panel
+work landed).
 
 ```bash
 # terminal D — pick one of:
-make loadtest                                                # default 60s attack
+make loadtest                                                # default --duration 60s
 go run ./cmd/loadtest --duration=10m --grafana=http://localhost:3000
 ```
 
 What this gives you:
 
-- **Showcase page** at <http://localhost:8090> (auto-opens? no — open it manually)
-- **Webhook sink** at `http://localhost:8091/sink` — POST deliveries land here,
-  HMAC is verified, the count is reflected in the page's "WH" column
-- An attack starts immediately against the api using `config/keys.yaml`
+- **Showcase page + operator panel** at <http://localhost:8090> (open
+  it manually — auto-open is off so the script works in CI/SSH too).
+- **Webhook sink** at `http://localhost:8091/sink` — POST deliveries
+  land here, HMAC is verified, the count is reflected in the page's
+  "WH" column and the post-attack summary.
+- **No attack runs yet.** The binary boots into idle state. To start
+  one: open the page, generate at least one key in the **Operator
+  panel** (see §7), then click **Start attack**. Or via curl:
+  `curl -X POST http://localhost:8090/api/attack/start -d '{"duration_seconds":60}'`.
 
 ---
 
-## 7. Showcase page tour (M6)
+## 6.5 Alternative: full mode (`make full`) — one command, no Go toolchain
+
+Equivalent of §2–§6 above but every binary runs in a container. Useful
+when you want to demo the project to someone without setting up Go, or
+when you want to exercise the production-shaped network topology
+locally (everything reaches everything by compose DNS).
+
+```bash
+make full       # builds shortlink-{api,worker,observer,loadtest}:dev,
+                # runs migrate, brings the whole stack up
+docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.full.yml ps
+```
+
+Expected: 12 services running (the 8 infra services from §2 plus api /
+worker / observer / loadtest). Same host ports for the infra (§2
+table), plus:
+
+| Service  | Host port | What                                           |
+|----------|-----------|------------------------------------------------|
+| api      | 8080      | API gateway, just like dev mode                |
+| observer | 9090      | Observer hub + WebSocket `/stream`             |
+| loadtest | 8090,8091 | Operator panel + showcase page + webhook sink  |
+
+Differences from dev mode:
+
+- **No `make keys` / `make migrate` steps needed** — `make full` runs
+  the migrate job up front, and keys are created via the operator
+  panel's Generate button (§7.1).
+- **`SSRF_ALLOWLIST` is preset** to include `loadtest` (the in-compose
+  hostname of the sink). You don't need to set anything per-terminal.
+- **The integration-test card is filtered out** of the test console
+  in full mode (no Go toolchain inside the container).
+- **`make loadtest` doesn't apply** — the loadtest binary is already
+  running in its container.
+
+Once `make full` is up, skip ahead to **§7 Showcase page tour** —
+everything from there works identically against either mode.
+
+To tear down: `make full-down` (preserves volumes) or `make dev-down`
+(also wipes them — same compose project name).
+
+---
+
+## 7. Showcase page tour (M6 + operator panel)
 
 Open <http://localhost:8090> in your browser. You should see:
 
-- **Top bar** — green `●` "Connected" indicator, "Reset stats" button
-- **API key metrics panel** — one row per key from `config/keys.yaml`,
-  with live counters. Rows where `429/total > 0.5` go red.
+- **Top bar** — green `●` "Live" indicator (the WebSocket is open),
+  "Reset stats" button.
+- **Operator panel** *(post-M9)* — two cards:
+  - **Keys** (left): table of registered keys with `name`, color-
+    coded tier, 6-char hint, attack rate/min, per-row `revoke` link.
+    Below: a Generate form (name + tier select + Generate). Generated
+    raw key + webhook secret are shown ONCE in a green callout with
+    per-row copy buttons; dismiss to clear.
+  - **Attack** (right): live status dot (idle/running/stopping),
+    duration input (defaults to 60s), multi-select key picker
+    (Ctrl-click for multiple, or none = all), Start/Stop buttons.
+  - **Tier gating**: test cards whose `required_tier` isn't covered
+    by the current key set get a yellow "needs &lt;tier&gt;" badge,
+    a dimmed look, and a disabled Run button. Generate a key of the
+    right tier → they snap back to "idle" + enabled.
+- **Test console** — manual_testing.md cases runnable from here. Run
+  one by clicking its **Run** button; "Run all auto" iterates every
+  non-manual card sequentially. Manual cards expose **Show steps**.
+- **API key metrics panel** — one row per key seen by the observer.
+  Same data as the operator panel's table but enriched with live
+  counters (Reqs / WH / 429 / Err / p99). Rows where
+  `429/total > 0.5` go red.
 - **Monitoring panel** — two Grafana iframes (`jobs/sec · error rate`
   and `QR p99 · queue depth`). If they say "Grafana not configured",
   you forgot `--grafana=...` in step 6.
 - **Log audit panel** — newest-first stream of events, per-entry TTL
-  badges, source/level/key filters
+  badges, source/level/key filters.
+
+### 7.1 — Generate your first key from the UI
+
+If you came in via dev mode and skipped `make keys`, the Keys table
+shows "No keys yet — generate one below." Click Generate with the
+defaults (name = whatever, tier = pro). The green callout reveals the
+raw `sl_live_…` key and the `whsec_…` webhook secret. Copy both
+somewhere safe — they disappear on dismiss and will never be shown
+again by the server (only the SHA-256 hash is persisted).
+
+The table now lists your key. The attack picker now lists it. The
+test cards' "Run" buttons that needed `pro` become enabled.
+
+### 7.2 — Start an attack from the UI
+
+In the Attack card: leave duration at 60s, leave keys empty
+(= attack with all registered keys), click **Start attack**. The
+status dot turns green and pulses; the test console's `429`-related
+cards may trip during the attack as the free-tier limit is exceeded.
+Click **Stop** to cancel early — status moves to `stopping` for ≤5s
+while vegeta drains, then back to `idle`.
 
 ### B6 verification — reset broadcasts to all clients
 
@@ -183,6 +290,94 @@ curl -sI http://localhost:8090/ | grep -iE "content-security|nosniff|frame-optio
 #           X-Frame-Options: DENY
 #           Referrer-Policy: no-referrer
 ```
+
+### Operator panel — control-plane endpoints (post-M9)
+
+The Generate / Start / Stop / Revoke buttons in §7.1–§7.2 are thin
+clients over six HTTP endpoints on `:8090`. Useful to curl directly
+when scripting or debugging.
+
+```bash
+# list keys
+curl -s http://localhost:8090/api/keys | jq
+
+# generate a key (name + tier required)
+curl -s -X POST http://localhost:8090/api/keys/generate \
+  -H "Content-Type: application/json" \
+  -d '{"name":"smoke","tier":"free"}' | jq
+# expected: {"name":"smoke","key":"sl_live_...","webhook_secret":"whsec_...",
+#            "key_hint":"...","tier":"free","attack_rate_per_min":10}
+
+# revoke (use the key_hint from above or from /api/keys)
+curl -s -X POST http://localhost:8090/api/keys/revoke \
+  -H "Content-Type: application/json" \
+  -d '{"key_hint":"abc123"}'
+# expected: {"key_hint":"abc123","db_rows":1,"from_registry":true}
+
+# attack lifecycle
+curl -s http://localhost:8090/api/attack/status                              # {"state":"idle"}
+curl -s -X POST http://localhost:8090/api/attack/start \
+  -H "Content-Type: application/json" -d '{"duration_seconds":10}' | jq
+curl -s http://localhost:8090/api/attack/status | jq                          # {"state":"running",…}
+curl -s -X POST http://localhost:8090/api/attack/start \
+  -H "Content-Type: application/json" -d '{"duration_seconds":5}'
+# expected: 409 — "an attack is already running"
+curl -s -X POST http://localhost:8090/api/attack/stop                         # cancels; status → stopping/idle
+```
+
+In dev mode the page server binds `127.0.0.1` (loopback only). In full
+mode (`CONTAINER_MODE=true`) it binds `0.0.0.0` because the container
+itself is the isolation boundary. Confirm:
+
+```bash
+# dev: this should reach the listener
+curl -sf http://127.0.0.1:8090/healthz && echo "dev-mode ok"
+
+# full mode: the host port mapping does the iso work; check from the host
+curl -sf http://localhost:8090/healthz && echo "full-mode ok"
+```
+
+### Tier-gating verification
+
+Reproduces what §7's "rate-limit-*" cards do visually:
+
+```bash
+# 1. List tests, note required_tier for each
+curl -s http://localhost:8090/tests/list | jq '.[] | {id, required_tier, manual}' | head -30
+
+# 2. Find your free-tier key's hint
+HINT=$(curl -s http://localhost:8090/api/keys | jq -r '.[] | select(.tier=="free") | .key_hint' | head -1)
+echo "Revoking free-tier key: $HINT"
+
+# 3. Revoke it
+curl -s -X POST http://localhost:8090/api/keys/revoke \
+  -H "Content-Type: application/json" -d "{\"key_hint\":\"$HINT\"}"
+
+# 4. In the browser, the rate-limit-* cards now show a yellow
+#    "NEEDS FREE" badge, are dimmed, and their Run button is disabled
+#    with a "Generate a free-tier key first" tooltip.
+
+# 5. Generate one back via the form (or via curl) — the cards re-enable.
+```
+
+### keys.yaml durability check
+
+The operator panel writes `config/keys.yaml` on every Generate /
+Revoke under the same mutex that guards the in-memory registry; the
+file write is atomic (tempfile + rename). Verify both flows persist:
+
+```bash
+# dev mode — the host's ./config/keys.yaml IS what loadtest reads
+head config/keys.yaml
+
+# full mode — bind-mounted from the host; same file, same content
+head config/keys.yaml      # should match what the page shows in /api/keys
+```
+
+A `Ctrl-C` on the host loadtest (dev mode) or `docker compose restart
+loadtest` (full mode) restarts the process; on boot it re-loads
+keys.yaml and the same keys are still there. In k8s the PVC at
+`/config` plays the same role.
 
 ---
 
@@ -459,7 +654,7 @@ Items covered by other sections are noted with the back-reference.
 | B7       | Pause the api during a loadtest, the `Err` column in the summary should reflect transport failures |
 | D1       | Pure code cleanup; verified by `go build ./...`                                |
 | D9       | Click "Clear logs" in the showcase, observer log ring should fully empty       |
-| D6       | `make images` should build exactly 4 images (api/worker/observer/migrate), not 6 |
+| D6       | `make images` should build exactly 5 images: api / worker / observer / migrate / loadtest (loadtest joined post-M9 when it became part of the chart). `keygen` stays CLI-only |
 | D7       | `go vet -tags integration ./tests/...` should report no unused imports         |
 | COV-3    | SPEC-only — read §5 in `docs/SPEC.md`                                          |
 | COV-1/2/14 | `request_completed` shows only on POST /shorten — confirm in the log audit panel that GET /healthz doesn't generate one |
@@ -469,12 +664,33 @@ Items covered by other sections are noted with the back-reference.
 
 ## 13. Teardown
 
+Dev mode:
+
 ```bash
 # stop the host binaries: Ctrl-C in each terminal
-make dev-down                       # tears the docker compose stack down
-make k8s-down                       # (if you ran §11)
+make dev-down                       # tears the docker compose stack down + wipes volumes
+```
+
+Full mode:
+
+```bash
+make full-down                      # tears all containers down, PRESERVES volumes
+make dev-down                       # same as above but ALSO wipes volumes (clean slate)
+```
+
+K8s (only if you ran §11):
+
+```bash
+make k8s-down                       # helm uninstall the release
 kind delete cluster --name shortlink  # nuke the cluster entirely
 ```
 
-`docker compose down -v` also wipes the volumes (Postgres data,
-MinIO objects) — useful when you want a clean migrate run.
+Notes:
+
+- `docker compose down -v` (under either of the dev-down paths above)
+  wipes the volumes — Postgres data, MinIO objects. The teardown
+  script also deletes `config/keys.yaml` when the volume is wiped,
+  since the on-disk hashes would no longer match anything in the DB.
+- Use `-KeepData -KeepKeys` flags on `scripts/local-teardown.ps1` if
+  you want to preserve both the volumes AND the keys file (e.g. to
+  restart the host binaries against existing data).

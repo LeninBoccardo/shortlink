@@ -96,7 +96,8 @@ kind-up: ## create the local kind cluster (idempotent)
 kind-load: images ## push the locally built images into the kind node
 	kind load docker-image --name $(KIND_CLUSTER) \
 	  shortlink-api:$(IMAGE_TAG) shortlink-worker:$(IMAGE_TAG) \
-	  shortlink-observer:$(IMAGE_TAG) shortlink-migrate:$(IMAGE_TAG)
+	  shortlink-observer:$(IMAGE_TAG) shortlink-migrate:$(IMAGE_TAG) \
+	  shortlink-loadtest:$(IMAGE_TAG)
 
 k8s-up: kind-up kind-load ## install/upgrade the Helm release into the kind cluster
 	helm upgrade --install $(HELM_RELEASE) deploy/k8s \

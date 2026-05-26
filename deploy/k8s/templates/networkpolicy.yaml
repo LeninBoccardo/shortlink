@@ -61,6 +61,21 @@ spec:
         - protocol: TCP
           port: 9090
 
+    # Loadtest webhook sink. During operator-triggered attacks the worker
+    # delivers webhooks to the loadtest Service on port 8091. Without
+    # this rule the egress to a private IP would be dropped despite
+    # SSRF_ALLOWLIST allowing the hostname — the NetworkPolicy is the
+    # SECOND layer of the SSRF defense and has the final say.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ .Chart.Name }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: loadtest
+      ports:
+        - protocol: TCP
+          port: 8091
+
     # 3. Redis + MinIO live in the same namespace as the chart in the
     #    demo cluster. Selectors come from values.yaml so an operator
     #    deploying multiple redis/minio instances per namespace can pin

@@ -30,6 +30,30 @@ observer:
     requests:  { cpu: 50m,  memory: 64Mi }
     limits:    { cpu: 200m, memory: 128Mi }
 
+# Loadtest: the operator panel + vegeta attack engine (SPEC §4.4). Single
+# replica by design — it's an ops tool, not a serving tier. The PVC keeps
+# config/keys.yaml durable across pod restarts so an operator who
+# generated keys via the UI doesn't lose them on a rollout.
+loadtest:
+  replicas: 1
+  resources:
+    requests: { cpu: 50m,  memory: 64Mi }
+    limits:   { cpu: 300m, memory: 256Mi }
+  # observerPublicURL + grafanaPublicURL get baked into the showcase
+  # page as the browser-facing endpoints. Defaults assume the local
+  # workflow of `kubectl port-forward svc/...-loadtest 8090:8090` +
+  # `kubectl port-forward svc/...-observer 9090:9090`, which makes the
+  # observer reachable at localhost:9090 from the browser. If you put
+  # the page behind an Ingress, set these to the public hostnames.
+  observerPublicURL: "http://localhost:9090"
+  grafanaPublicURL: "http://localhost:3000"
+  persistence:
+    enabled: true
+    size: 10Mi
+    # storageClassName empty → use the cluster default. Override for a
+    # specific class on managed clusters (gp3, premium-rwo, etc.).
+    storageClassName: ""
+
 pgbouncer:
   image:
     repository: edoburu/pgbouncer

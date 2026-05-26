@@ -1,0 +1,27 @@
+{{- if .Values.loadtest.persistence.enabled }}
+# PVC for the loadtest binary's /config directory. The operator panel
+# writes config/keys.yaml on every Generate / Revoke (SPEC §4.4); without
+# a persistent volume the file would die with the pod, so a pod restart
+# would force the operator to regenerate every key while the api/worker
+# already have the hashes in Postgres. The PVC keeps the file in sync
+# with what's in the DB across the pod lifecycle.
+#
+# Size is intentionally tiny — keys.yaml is ~1KB per key. 10Mi gives
+# room for ~10k keys before anyone needs to revisit. local-limits.yaml
+# also lives here and is a few hundred bytes.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "shortlink.componentName" (dict "root" . "component" "loadtest-config") }}
+  labels:
+    {{- include "shortlink.componentLabels" (dict "root" . "component" "loadtest") | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.loadtest.persistence.size }}
+  {{- with .Values.loadtest.persistence.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}

@@ -28,5 +28,8 @@ data:
   OBSERVER_URL: {{ printf "http://%s:9090" (include "shortlink.componentName" (dict "root" . "component" "observer")) | quote }}
   OBSERVER_ALLOWED_ORIGINS: {{ .Values.config.observerAllowedOrigins | quote }}
   QUEUE_DEPTH_THRESHOLD: {{ .Values.config.queueDepthThreshold | quote }}
-  SSRF_ALLOWLIST: {{ .Values.config.ssrfAllowlist | quote }}
+  # SSRF_ALLOWLIST: user list + in-cluster loadtest Service auto-appended
+  # so the worker can deliver attack webhooks. See shortlink.ssrfAllowlist
+  # in _helpers.tpl for the merge rule.
+  SSRF_ALLOWLIST: {{ include "shortlink.ssrfAllowlist" . | quote }}
   URL_BLOCKLIST: {{ .Values.config.urlBlocklist | quote }}

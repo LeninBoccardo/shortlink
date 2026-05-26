@@ -89,3 +89,20 @@ capabilities:
   drop:
     - ALL
 {{- end -}}
+
+{{/*
+  Effective SSRF_ALLOWLIST: the user-provided list from
+  .Values.config.ssrfAllowlist plus the in-cluster loadtest Service
+  hostname (so the worker can deliver attack webhooks without the SSRF
+  guard rejecting "<release>-shortlink-loadtest" as a private DNS name).
+  Returns a comma-separated string with no leading/trailing comma.
+*/}}
+{{- define "shortlink.ssrfAllowlist" -}}
+{{- $user := .Values.config.ssrfAllowlist | default "" -}}
+{{- $loadtest := include "shortlink.componentName" (dict "root" . "component" "loadtest") -}}
+{{- if $user -}}
+{{- printf "%s,%s" $user $loadtest -}}
+{{- else -}}
+{{- $loadtest -}}
+{{- end -}}
+{{- end -}}

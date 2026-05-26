@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "shortlink.componentName" (dict "root" . "component" "loadtest") }}
+  labels:
+    {{- include "shortlink.componentLabels" (dict "root" . "component" "loadtest") | nindent 4 }}
+spec:
+  # Single-replica by design: the loadtest is an operator panel, not a
+  # serving tier. Two replicas would double-attack from the same keys
+  # and would each maintain their own /api/keys/generate write to the
+  # PVC — both inconsistent and unnecessary. KEDA scales the worker;
+  # loadtest stays at 1.
+  replicas: {{ .Values.loadtest.replicas }}
+  strategy:
+    # Recreate (not RollingUpdate): the PVC is ReadWriteOnce, so a new
+    # pod can't bind the volume until the old pod releases it. Forcing
+    # Recreate avoids a deploy-time deadlock where the new pod sits in
+    # Pending while the old one stays Running.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: loadtest
+  template:
+    metadata:
+      labels:
+        {{- include "shortlink.componentLabels" (dict "root" . "component" "loadtest") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+    spec:
+      terminationGracePeriodSeconds: 15
+      securityContext:
+        {{- include "shortlink.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: loadtest
+          image: {{ include "shortlink.image" (dict "Values" .Values "name" "loadtest") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- include "shortlink.containerSecurityContext" . | nindent 12 }}
+          # Same CLI shape as compose.full — server-side URLs use in-
+          # cluster Service names, --observer-public + --grafana-public
+          # carry the browser-facing URLs (default: localhost:N for the
+          # port-forward workflow; override in values.yaml when behind
+          # an Ingress).
+          args:
+            - "--target=http://{{ include "shortlink.componentName" (dict "root" . "component" "api") }}:8080"
+            - "--observer=http://{{ include "shortlink.componentName" (dict "root" . "component" "observer") }}:9090"
+            - "--observer-public={{ .Values.loadtest.observerPublicURL }}"
+            - "--grafana=http://grafana:3000"
+            - "--grafana-public={{ .Values.loadtest.grafanaPublicURL }}"
+            - "--prometheus=http://prometheus:9090"
+            - "--sink-url=http://{{ include "shortlink.componentName" (dict "root" . "component" "loadtest") }}:8091/sink"
+            - "--keys=/config/keys.yaml"
+            - "--limits=/config/local-limits.yaml"
+          envFrom:
+            - configMapRef:
+                name: {{ include "shortlink.componentName" (dict "root" . "component" "config") }}
+            - secretRef:
+                name: {{ include "shortlink.componentName" (dict "root" . "component" "secrets") }}
+          env:
+            - name: CONTAINER_MODE
+              value: "true"
+          ports:
+            - name: page
+              containerPort: 8090
+              protocol: TCP
+            - name: sink
+              containerPort: 8091
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: page
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: page
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          resources:
+            {{- toYaml .Values.loadtest.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /config
+      volumes:
+        - name: config
+          {{- if .Values.loadtest.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "shortlink.componentName" (dict "root" . "component" "loadtest-config") }}
+          {{- else }}
+          # Ephemeral fallback: useful for CI / smoke runs where you
+          # don't want a PVC. Keys.yaml dies with the pod, but every
+          # api/worker still validates by hash so existing keys still
+          # work — operators just have to re-Generate in the UI.
+          emptyDir: {}
+          {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "shortlink.componentName" (dict "root" . "component" "loadtest") }}
+  labels:
+    {{- include "shortlink.componentLabels" (dict "root" . "component" "loadtest") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: loadtest
+  ports:
+    - name: page
+      port: 8090
+      targetPort: page
+      protocol: TCP
+    - name: sink
+      # Workers in the same release reach the sink via this Service name
+      # so the SSRF_ALLOWLIST below can stay tight (just the Service host).
+      port: 8091
+      targetPort: sink
+      protocol: TCP

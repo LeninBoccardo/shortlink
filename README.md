@@ -67,25 +67,51 @@ for *why* every non-obvious call was made.
 
 ## Quickstart
 
+Two ways to run it locally. Pick the one that matches what you want to do.
+
 ### Prerequisites
 
-- Go 1.26+
-- Docker + docker compose (for the local stack)
+- Docker + docker compose (required for both modes)
+- Go 1.26+ (only needed for **dev mode** — full mode builds inside Docker)
 
-### Bring up the stack
+### Option A — Full mode (no Go toolchain needed)
 
 ```sh
-make dev         # Postgres + MinIO + Redis + PgBouncer + Prometheus + Grafana
-make migrate     # apply schema
-make keys        # generate three test API keys -> config/keys.yaml
+make full        # builds images, applies migrations, brings everything up
+```
 
-# In separate terminals (or background):
+Open <http://localhost:8090>. The operator panel at the top of the page
+lets you generate API keys, run individual probe tests, and trigger a
+vegeta attack. Logs stream to the page via the observer WebSocket; the
+embedded Grafana iframes show the metrics dashboards. `make full-down`
+tears it back down.
+
+This mode runs the four app binaries (api, worker, observer, loadtest)
+as containers alongside the infrastructure. Slow code iteration (every
+change triggers a `docker build`), but zero setup beyond Docker — pick
+this for demos, evaluations, or first-time-running-the-project.
+
+### Option B — Dev mode (fast code iteration)
+
+```sh
+make dev         # infra only: Postgres + Redis + MinIO + PgBouncer + Prometheus + Grafana
+make migrate     # apply schema
+
+# In separate terminals (or via the included scripts/local-setup.ps1 / .sh):
 make run-observer
 make run-worker
 make run-api
+make loadtest    # serves http://localhost:8090 — operator panel + showcase
 ```
 
-Then shorten a URL using a key printed by `make keys`:
+Binaries run on the host via `go run`, so a change is just `Ctrl-C` +
+re-run. Same operator panel at <http://localhost:8090>, same flow.
+First-time bring-up: generate keys via the page's Generate button, or
+run `make keys` for the CLI fast-path (creates three default tier keys).
+
+### Talk to the API directly
+
+Whichever mode you're in, the API listens on `:8080`:
 
 ```sh
 curl -X POST http://localhost:8080/shorten \
@@ -101,16 +127,6 @@ The response is `202 Accepted` with a `job_id`. The result is delivered
 asynchronously to the webhook URL, signed with `X-ShortLink-Signature:
 sha256=<hex>`. Visiting `http://localhost:8080/{slug}` 302-redirects to
 the original URL.
-
-### Showcase dashboard
-
-```sh
-make loadtest    # serves http://localhost:8090 + runs a vegeta attack
-```
-
-Opens a live page with per-key metrics (WebSocket from observer), a 500-entry
-log audit panel, and embedded Grafana iframes. The runner stays up after the
-attack completes so the final dashboard is inspectable; Ctrl-C tears it down.
 
 ### Run on Kubernetes
 

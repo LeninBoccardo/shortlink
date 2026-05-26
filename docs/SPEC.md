@@ -669,27 +669,97 @@ The TTL governs how long a **logged** event stays in the log ring buffer. Counte
 ### 4.4 Load Test Runner
 
 **Binary:** `cmd/loadtest`  
-**Ports:** `8090` (showcase page) · `8091` (built-in webhook sink)  
+**Ports:** `8090` (showcase page + operator panel) · `8091` (built-in webhook sink)  
 **Library:** `github.com/tsenart/vegeta` (embedded as a library, not CLI)
 
-The load test runner has three jobs: run multi-key attacks against the API, **serve the single-page showcase UI** ([§11](#11-frontend-dashboard)) — embedded from `cmd/loadtest/web/` via `go:embed` — and host a **webhook sink** that receives the resulting callbacks. The showcase page is naturally tied to a test's lifecycle: you run `make loadtest`, the attack starts, and the page is available at `:8090` for the duration.
+The load test runner has four jobs: serve the single-page showcase UI ([§11](#11-frontend-dashboard)) — embedded from `cmd/loadtest/web/` via `go:embed` — host the **operator panel** that generates keys + drives attack lifecycle, run multi-key vegeta attacks against the API, and host a **webhook sink** that receives the resulting callbacks.
+
+The binary does **not** start an attack at boot. The operator panel (next subsection) is the canonical entry point: the user generates keys via the UI (or the CLI `cmd/keygen`), then clicks Start in the browser. CLI flags carry defaults for the attack duration and target URLs.
 
 #### CLI flags
 
 ```text
---keys        path to keys.yaml config file              (default: config/keys.yaml)
---limits      path to local-limits.yaml (scaling panel)  (default: config/local-limits.yaml)
---target      base URL of API gateway                    (default: http://localhost:8080)
---duration    attack duration                            (default: 60s)
---observer    observer hub URL for live stats            (default: http://localhost:9090)
---grafana     Grafana base URL for embedded panels       (default: http://localhost:3000)
---prometheus  Prometheus base URL (test-console probes)  (default: http://localhost:9091)
---port        showcase page port                         (default: 8090)
---sink-url    webhook sink URL advertised to the API     (default: http://localhost:8091/sink)
---sink-port   port the sink listens on                   (default: 8091)
+--keys              path to keys.yaml config file              (default: config/keys.yaml)
+--limits            path to local-limits.yaml (scaling panel)  (default: config/local-limits.yaml)
+--target            base URL of API gateway                    (default: http://localhost:8080)
+--duration          default attack duration                    (default: 60s — overridable per attack via POST /api/attack/start)
+--observer          observer hub URL (server-side: event emit) (default: http://localhost:9090)
+--observer-public   observer URL templated into the browser    (default: --observer value)
+--grafana           Grafana base URL (server-side: healthz)    (default: http://localhost:3000)
+--grafana-public    Grafana URL templated into the browser     (default: --grafana value)
+--prometheus        Prometheus base URL (test-console probes)  (default: http://localhost:9091)
+--port              showcase page port                         (default: 8090)
+--sink-url          webhook sink URL advertised to the API     (default: http://localhost:8091/sink)
+--sink-port         port the sink listens on                   (default: 8091)
+--database-url      Postgres DSN for keygen + revoke           (default: $DATABASE_URL or the PgBouncer local default)
 ```
 
-`--sink-url` is the address the **API/worker** must use to reach the sink. The load test runner always runs on the host ([§13](#13-local-development)); the value differs by where the API runs: `http://localhost:8091/sink` when the API is also on the host, `http://host.docker.internal:8091/sink` when the API runs in docker-compose. Whatever host it names must be present in `SSRF_ALLOWLIST` ([§9](#9-security)).
+The `*--public` flags split browser-facing URLs from server-side URLs.
+In dev mode they're identical (both `localhost:N`). In `make full` /
+k8s mode the loadtest container reaches its peers via Compose/Service
+DNS (`observer:9090`) but the browser must use the published host port
+(`localhost:9090`); the public variants carry the browser-facing values
+into the embedded page.
+
+`--sink-url` is the address the **API/worker** must use to reach the
+sink. The value depends on where the api+worker run:
+
+| Mode | api+worker location | `--sink-url` |
+|------|---------------------|--------------|
+| dev (`make dev` + host binaries) | host | `http://localhost:8091/sink` |
+| dev container-mode (`-ContainerMode` flag) | compose | `http://host.docker.internal:8091/sink` |
+| full (`make full`) | compose | `http://<loadtest-service>:8091/sink` |
+| k8s | cluster | `http://<release>-shortlink-loadtest:8091/sink` |
+
+Whatever host the sink names must be present in `SSRF_ALLOWLIST`
+([§9](#9-security)). The Helm chart appends the loadtest Service name
+automatically (`shortlink.ssrfAllowlist` helper).
+
+#### Operator panel
+
+The operator panel is the loadtest binary's HTTP control plane. Mounted
+under `/api/*` on the same `:8090` server as the showcase page and the
+test console. Used by the browser UI to manage keys and drive attacks:
+
+```text
+GET  /api/keys                list registered keys (hint, tier, name, rate)
+POST /api/keys/generate       {name, tier} → returns raw key + webhook secret (once)
+POST /api/keys/revoke         {key_hint} → soft-deletes in DB + drops from keys.yaml
+GET  /api/attack/status       {state: idle|running|stopping, elapsed, remaining, key_hints}
+POST /api/attack/start        optional {duration_seconds, key_hints} → starts attack (409 if running)
+POST /api/attack/stop         cancels the current attack, waits up to 5s to drain
+```
+
+Key generation writes both the DB row (api_keys hash) **and** the
+keys.yaml file in one operation, under a single mutex, with the
+file write being atomic (tempfile + rename). keys.yaml is the on-disk
+source of truth — pod restarts reload it; pod death without the PVC
+(see [§12](#12-kubernetes-deployment)) discards UI-generated keys but
+the DB hashes survive so existing keys still authenticate.
+
+Attack state is a one-at-a-time machine: `idle` → `running` →
+(`stopping` →) `idle`. A second `/api/attack/start` while running
+returns 409 with a "stop it first" message. `/api/attack/stop` cancels
+the vegeta context and waits up to 5s for the goroutine to drain —
+returns 200 with `state: idle` on success, 202 with `state: stopping`
+if drain exceeded the wait.
+
+#### Security: the operator panel is local-only
+
+`/api/keys/generate` is an unauthenticated keygen oracle. `/api/attack/
+start` triggers a vegeta storm. `/tests/run/*` shells out to other
+processes. The loadtest binary therefore binds:
+
+- **Dev mode** (binary runs on host): `127.0.0.1:8090` — loopback only.
+- **Container mode** (`CONTAINER_MODE=true` env): `0.0.0.0:8090` — the
+  container is now the isolation boundary, gated by docker port
+  publishing / k8s NetworkPolicy.
+
+There is no in-protocol auth on these endpoints. Production deployments
+behind an Ingress MUST gate the loadtest Service with their own auth
+layer (oauth2-proxy, ingress-nginx basic-auth, etc.); the current chart
+ships unauthenticated because the spec scope is "operator panel for the
+demo deployment".
 
 #### Test console
 
@@ -1310,17 +1380,36 @@ spec:
 
 A PgBouncer Deployment + Service sits between application pods and Postgres ([§6](#6-storage-design)). All services point `DATABASE_URL` at PgBouncer; PgBouncer holds a small upstream pool, keeping real Postgres connections bounded regardless of how far KEDA scales the worker tier.
 
+### Loadtest Deployment
+
+The loadtest binary deploys as a **single-replica** Deployment (it's an operator panel, not a serving tier) backed by a small **ReadWriteOnce PVC** for `/config`, where `keys.yaml` lives. Single replica because two would split UI-driven keygen writes across the RWO volume — neither could bind. `strategy.type: Recreate` prevents a deploy-time deadlock where the new pod waits for the old one to release the PVC.
+
+Args mirror `docker-compose.full.yml`: server-side URLs use in-cluster Service names (`<release>-shortlink-api:8080`, `<release>-shortlink-observer:9090`), and `--observer-public` / `--grafana-public` carry the browser-facing URLs — default `http://localhost:9090` and `http://localhost:3000` for the `kubectl port-forward` workflow, overridable for Ingress-fronted deployments.
+
+`CONTAINER_MODE=true` is set explicitly so the page server binds `0.0.0.0:8090` (the container is now the isolation boundary, not the loopback lock from dev mode) and the test runner drops the `integration-test` card from `/tests/list` (no Go toolchain or Docker socket in-cluster).
+
+A second egress rule is added to the worker NetworkPolicy: `worker → loadtest:8091` (the webhook sink). Together with `SSRF_ALLOWLIST` including the loadtest Service hostname (auto-appended via the `shortlink.ssrfAllowlist` helper), the worker can deliver attack webhooks while public-internet egress stays gated to non-RFC1918 destinations.
+
 ### Scope note
 
-KEDA, PgBouncer, the migration Job, the egress `NetworkPolicy`, and the autoscaling story apply to the Kubernetes deployment. `docker-compose` mirrors the same topology with simpler equivalents ([§13](#13-local-development)).
+KEDA, PgBouncer, the migration Job, the egress `NetworkPolicy`, the loadtest PVC, and the autoscaling story apply to the Kubernetes deployment. `docker-compose` mirrors the same topology with simpler equivalents ([§13](#13-local-development)).
 
 ---
 
 ## 13. Local Development
 
+Local-dev supports **two modes** that share the same infrastructure compose file but differ in where the shortlink binaries run:
+
+| Mode | Bring-up | Where the binaries run | When to use |
+|------|----------|------------------------|-------------|
+| **Dev** (default) | `make dev` + `make run-api` / `make run-worker` / `make run-observer` / `make loadtest` | host (`go build` + restart) | iterating on code |
+| **Full** (showcase) | `make full` (one command) | compose containers | demo / "just show me" / no Go toolchain needed |
+
+Both modes share the same Postgres / Redis / MinIO / PgBouncer / Prometheus / Grafana infra services. Dev mode is the only one that exercises the `host.docker.internal` bridge for compose→host traffic; full mode reaches everything via compose DNS.
+
 ### docker-compose.yml services
 
-docker-compose hosts only the **infrastructure dependencies**. The shortlink binaries themselves (api, worker, observer, loadtest) run **on the developer host** via `make run-api` / `make run-worker` / `make run-observer` / `make loadtest`, kept out of compose so iteration is just `go build` + restart (no `docker compose build` cycle).
+The base compose file hosts only the **infrastructure dependencies**. In dev mode, the shortlink binaries themselves (api, worker, observer, loadtest) run **on the developer host** via `make run-*`, kept out of compose so iteration is just `go build` + restart (no `docker compose build` cycle).
 
 | Service | Image | Port(s) | Notes |
 |---------|-------|---------|-------|
@@ -1338,7 +1427,26 @@ Notes:
 - The **load test runner runs on the host** via `make loadtest` (one-shot, lasting the attack duration). Its webhook sink listens on the host at `:8091`; the host-run api/worker reach it via `127.0.0.1`/`localhost`, so `SSRF_ALLOWLIST` must include those hosts (`SSRF_ALLOWLIST=127.0.0.1,localhost,host.docker.internal`).
 - The compose file is **built up across milestones** — Postgres + MinIO from M1, Redis from M2, Prometheus + Grafana from M7, PgBouncer at M8 ([§17](#17-implementation-milestones)).
 - **Prometheus host port is `9091`** (not the canonical `9090`) because the observer already owns host `9090` during local dev. Grafana still reaches Prometheus on the internal compose name `http://prometheus:9090`.
-- **Scrape model.** Locally the api/worker/observer binaries run on the host, so the Prometheus container reaches them via `host.docker.internal:8080/8081/9090` (compose declares `host.docker.internal:host-gateway` as an `extra_host` so Linux works too). In Kubernetes (M8) they become pod targets discovered by labels — the dashboards and metric names do not change.
+- **Scrape model.** In dev mode the api/worker/observer binaries run on the host, so the Prometheus container reaches them via `host.docker.internal:8080/8081/9090` (compose declares `host.docker.internal:host-gateway` as an `extra_host` so Linux works too). In full mode (next subsection) those binaries move into the compose network and Prometheus reaches them by Service name. In Kubernetes (M8) they become pod targets discovered by labels — the dashboards and metric names do not change.
+
+### docker-compose.full.yml — showcase mode
+
+The full-mode layer adds the four app binaries (api, worker, observer, loadtest) as build-from-source containers on top of the base infra file. `make full` builds the images, runs the one-shot migrate service, and brings everything up with one command.
+
+| Service | Internal name | Host port | Notes |
+|---------|---------------|-----------|-------|
+| `api` | `api:8080` | `8080` | Build arg `BINARY=api` from the multi-stage Dockerfile |
+| `worker` | `worker:8081` | (none) | Worker only listens for in-cluster scraping; not exposed to host |
+| `observer` | `observer:9090` | `9090` | Browser reaches `/stream` via `ws://localhost:9090/stream` |
+| `loadtest` | `loadtest:8090,8091` | `8090,8091` | Operator panel + test console + webhook sink. `--observer-public=http://localhost:9090` so the browser uses the published port |
+
+Differences from dev mode:
+
+- **No host binaries.** `make run-*` is unused; everything is in compose. Iteration becomes `make full` after each code change (the build is cached so the rebuild is fast).
+- **SSRF_ALLOWLIST extends to `loadtest`** so the worker can deliver webhooks to the sink at `loadtest:8091/sink`. The base compose file's `host.docker.internal` allowlist is dropped because no service needs it in this topology.
+- **keys.yaml is bind-mounted** from `./config` so UI-generated keys survive container restarts and remain editable from the host.
+- **`CONTAINER_MODE=true`** is set on the loadtest service so the page server binds `0.0.0.0:8090` (otherwise the host's port mapping can't reach a `127.0.0.1`-bound listener inside the container).
+- **The integration-test card** is dropped from `/tests/list` (no Go toolchain in the runtime image, no Docker socket mounted).
 
 ### Makefile targets
 

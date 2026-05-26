@@ -468,3 +468,80 @@ purpose. Scale the pool, not the replica count. **Tradeoff:** PgBouncer
 is the path's SPOF; an upgrade or pod restart drops the entire connection
 fleet briefly. Acceptable; production-grade HA would front it with a
 TCP load balancer over 2+ replicas with `DEFAULT_POOL_SIZE` halved.
+
+---
+
+## 13. Operator panel (post-M9)
+
+### Loadtest becomes the UI canonical entry point (post-M9)
+Original M5 design: vegeta attack auto-starts when the loadtest binary
+boots, runs for `--duration`, then the showcase page stays up for
+inspection. Operator key management lived in `cmd/keygen` (CLI only),
+keys.yaml was static. **Why changed:** users wanted "open the page,
+generate a key, click Start" as the canonical demo flow without needing
+a Go toolchain or a terminal walkthrough. **What it cost:** loadtest
+binary now opens a DB connection (was read-only against keys.yaml),
+the operator panel surfaces three new unauth endpoints, and the
+binary lives in `127.0.0.1:8090` for dev mode and `0.0.0.0:8090` for
+container mode — split bind addresses based on `CONTAINER_MODE` env.
+**Rejected:** a separate microservice for the control plane (no
+deployment / scaling story justifies the split; loadtest is already
+the natural home).
+
+### Two compose files instead of one (post-M9)
+`docker-compose.yml` keeps infra-only; `docker-compose.full.yml` adds
+the four app binaries as containers. `make dev` + `make run-*` is dev
+mode; `make full` is showcase mode. **Why:** the SPEC §13 "iterate
+fast via host binaries" model and the SPEC §4.4 "operator panel as
+the one-command demo" model are both valuable and serve different
+users (developer vs evaluator). One unified compose either bakes in
+container rebuilds on every code change (slow) or forces host-only
+(can't demo without `go install`). **Rejected:** single `--profile`-
+gated compose, because compose profile expansion is opaque to
+`docker compose up` users and adds friction to the "I just want to
+see it work" flow.
+
+### keys.yaml is canonical, in-memory + DB are derived (post-M9)
+The operator panel writes keys.yaml on every Generate / Revoke
+under the same mutex that guards the in-memory registry. **Why:**
+keys.yaml is gitignored but lives across pod restarts (via the PVC
+in k8s or the bind mount in compose.full). DB hashes survive volume
+wipes only inasmuch as the user keeps the Postgres volume; in-memory
+state dies with the process. Anchoring on the file means a `helm
+upgrade` (which recreates the pod) doesn't lose keys. **Rejected:**
+in-memory-only with a "Download keys.yaml" button — relies on the
+operator remembering to download before reopening, error-prone.
+
+### `--observer-public` / `--grafana-public` split (post-M9)
+Two flag pairs because the loadtest binary needs different URLs for
+server-side and browser-side use of the same logical service. In
+dev mode they're identical (`localhost:N`). In compose.full / k8s
+the server-side reaches `observer:9090` via service DNS but the
+browser must use the published host port `localhost:9090`. **Why
+explicit flags:** alternative would be to have the page server
+introspect compose names and rewrite them for the browser — opaque
+and fragile. Explicit flags keep the two endpoints in plain sight in
+`docker-compose.full.yml` and `values.yaml`. **Rejected:** auto-
+rewriting via a `host.docker.internal`-style alias inside the
+container — would only work on Docker Desktop, not Linux Docker or
+k8s.
+
+### Loadtest single-replica in k8s with PVC for `/config` (post-M9)
+Mirrors the observer-stays-at-1-replica decision above for the same
+reason: the operator panel maintains state. A second replica would
+split keys.yaml writes across the RWO volume (neither would bind)
+and fork the in-memory key registry. Tiny PVC (10Mi, plenty for ~10k
+keys at ~1KB each) gives `helm upgrade` a place to round-trip
+keys.yaml. **Why not emptyDir:** UI-generated keys would die on
+every rollout, surprising the operator. The PVC adds 10Mi to the
+chart's storage footprint — negligible.
+
+### `CONTAINER_MODE` env var instead of auto-detect (post-M9)
+The loadtest binary changes two behaviors when running in a
+container: bind address (`0.0.0.0` vs `127.0.0.1`) and integration-
+test card filtering. **Why explicit env var:** runtime detection
+(check for `/.dockerenv`, etc.) is platform-specific and breaks
+inside non-Docker runtimes (Podman, k8s, CI). Explicit flag is set
+by the chart / compose.full file at the source of truth. **Tradeoff:**
+host-mode users who happen to be inside a container (e.g. WSL +
+Docker Desktop) need to set it themselves — none have asked yet.

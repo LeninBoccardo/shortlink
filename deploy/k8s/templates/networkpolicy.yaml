@@ -126,4 +126,56 @@ spec:
           port: 80
         - protocol: TCP
           port: 443
+---
+# Ingress policy on the loadtest pod. The loadtest binary hosts TWO ports:
+#   - 8091/sink  — receives signed webhook deliveries from the worker
+#   - 8090/page  — the operator panel + unauthenticated /api/keys + /api/attack
+#                  control plane (a free keygen oracle + free attack trigger
+#                  to anything that can reach it; documented limitation, the
+#                  in-cluster default ingress posture is the second layer).
+#
+# Without this policy, ANY pod in the namespace could `curl
+# http://<release>-shortlink-loadtest:8090/api/keys/generate` and mint an
+# unlimited-tier API key, or POST /api/attack/start to launch vegeta against
+# the api Service from inside the cluster. The risk is a buggy debug pod,
+# a stale CronJob image, or a sidecar that processes attacker input — every
+# in-namespace pod becomes a route to operator-grade control.
+#
+# What this policy allows:
+#   - 8091 from worker pods only (legitimate webhook receiver)
+#   - 8090 from nothing in the cluster
+#
+# How operators still reach 8090: `kubectl port-forward svc/...-loadtest 8090`
+# bypasses NetworkPolicy entirely (it tunnels through the kubelet, not the
+# pod network), so the operator workflow is unchanged. Any in-cluster ingress
+# (an external Ingress controller pointed at the page port, say) would need
+# an explicit ingress rule added here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "shortlink.componentName" (dict "root" . "component" "loadtest-ingress") }}
+  labels:
+    {{- include "shortlink.componentLabels" (dict "root" . "component" "loadtest") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: loadtest
+  policyTypes:
+    - Ingress
+  ingress:
+    # Worker → sink (signed webhook deliveries during attacks).
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ .Chart.Name }}
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: worker
+      ports:
+        - protocol: TCP
+          port: 8091
+    # No in-cluster ingress to :8090 by default. If you front the operator
+    # panel with an Ingress controller, add a rule here that matches the
+    # controller's pod labels (e.g. nginx-ingress) on port 8090.
 {{- end }}

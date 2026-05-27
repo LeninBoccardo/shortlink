@@ -6,16 +6,21 @@
 // keygen inserts three more keys (the prior batch stays valid in Postgres
 // even though keys.yaml on disk is overwritten). Pass --replace to revoke
 // every still-active key first, so the new keys.yaml is the only thing that
-// authenticates.
+// authenticates. --replace shows the target DATABASE_URL host + active-key
+// count and waits for a "yes" before running; pass --yes to skip the prompt
+// (required in non-interactive shells / CI).
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -41,6 +46,7 @@ var profiles = []struct {
 
 func main() {
 	replace := flag.Bool("replace", false, "revoke every still-active key in api_keys before inserting the new batch")
+	yes := flag.Bool("yes", false, "skip the --replace confirmation prompt (required for non-interactive shells / CI)")
 	flag.Parse()
 
 	cfg, err := config.Load()
@@ -57,6 +63,25 @@ func main() {
 	queries := db.New(pool)
 
 	if *replace {
+		active, err := queries.CountActiveAPIKeys(ctx)
+		if err != nil {
+			log.Fatalf("count active keys: %v", err)
+		}
+		host := dsnHost(cfg.DatabaseURL)
+		// Echo what's about to happen BEFORE the destructive call. If the
+		// operator has DATABASE_URL pointed at the wrong cluster (a stale
+		// shell export, a forgotten dev/prod toggle), the host string + the
+		// active-key count are the load-bearing signals that this is not
+		// the database they meant to nuke.
+		fmt.Printf("--replace will revoke %d active API key(s) in DATABASE_URL host %q.\n", active, host)
+		if !*yes {
+			fmt.Print("Type 'yes' to continue (anything else aborts): ")
+			reader := bufio.NewReader(os.Stdin)
+			line, _ := reader.ReadString('\n')
+			if strings.TrimSpace(line) != "yes" {
+				log.Fatal("aborted by user (no keys revoked, no keys created)")
+			}
+		}
 		n, err := queries.RevokeAllActiveAPIKeys(ctx)
 		if err != nil {
 			log.Fatalf("revoke active keys: %v", err)
@@ -102,4 +127,15 @@ func main() {
 		log.Fatalf("write keys file: %v", err)
 	}
 	fmt.Printf("\nWrote %d keys to %s (gitignored — contains real secrets).\n", len(out.Keys), keysPath)
+}
+
+// dsnHost extracts the host[:port] portion of a Postgres DSN for display.
+// Returns a sentinel string rather than the raw DSN on parse failure — the
+// DSN may carry an inline password we shouldn't echo to the terminal.
+func dsnHost(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil || u.Host == "" {
+		return "<unparseable DSN>"
+	}
+	return u.Host
 }

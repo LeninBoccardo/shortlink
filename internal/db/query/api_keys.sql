@@ -43,3 +43,9 @@ WHERE key_hint = $1 AND revoked_at IS NULL;
 -- requests under the revoked keys keep working until they finish.
 UPDATE api_keys SET revoked_at = NOW()
 WHERE revoked_at IS NULL;
+
+-- name: CountActiveAPIKeys :one
+-- Used by `keygen --replace` to print "about to revoke N key(s)" before the
+-- operator confirms. A non-zero count against a DSN they didn't expect is
+-- the load-bearing signal that they're pointed at the wrong cluster.
+SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL;

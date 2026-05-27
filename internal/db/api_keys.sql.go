@@ -11,6 +11,20 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countActiveAPIKeys = `-- name: CountActiveAPIKeys :one
+SELECT COUNT(*) FROM api_keys WHERE revoked_at IS NULL
+`
+
+// Used by `keygen --replace` to print "about to revoke N key(s)" before the
+// operator confirms. A non-zero count against a DSN they didn't expect is
+// the load-bearing signal that they're pointed at the wrong cluster.
+func (q *Queries) CountActiveAPIKeys(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveAPIKeys)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createAPIKey = `-- name: CreateAPIKey :one
 INSERT INTO api_keys (key_hash, key_hint, name, tier, webhook_secret, webhook_url)
 VALUES ($1, $2, $3, $4, $5, $6)

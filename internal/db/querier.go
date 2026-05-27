@@ -22,6 +22,10 @@ type Querier interface {
 	// the column is cleared first so a concurrent webhook handler can't Stat
 	// a key we're about to delete.
 	ClearQRObjects(ctx context.Context, jobIds []string) error
+	// Used by `keygen --replace` to print "about to revoke N key(s)" before the
+	// operator confirms. A non-zero count against a DSN they didn't expect is
+	// the load-bearing signal that they're pointed at the wrong cluster.
+	CountActiveAPIKeys(ctx context.Context) (int64, error)
 	CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (ApiKey, error)
 	DeleteOldFailedShortURLs(ctx context.Context, cutoff pgtype.Timestamptz) (int64, error)
 	// Targeted rollback when the gateway inserted a pending row but then failed

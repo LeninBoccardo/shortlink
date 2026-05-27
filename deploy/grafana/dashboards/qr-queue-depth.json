@@ -162,8 +162,8 @@
         "overrides": [
           {
             "matcher": {
-              "id": "byName",
-              "options": "dlq"
+              "id": "byRegexp",
+              "options": "^dlq"
             },
             "properties": [
               {
@@ -215,7 +215,7 @@
           },
           "editorMode": "code",
           "expr": "shortlink_dlq_depth",
-          "legendFormat": "dlq",
+          "legendFormat": "dlq ({{instance}})",
           "range": true,
           "refId": "B"
         }

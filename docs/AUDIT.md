@@ -30,13 +30,26 @@ recorded, plus a rough confidence.
 
 ## Deferred — performance
 
-### P1 — Hot-row `hit_count` counter (score 6, confidence 95%)
+### P1 — Hot-row `hit_count` counter (score 6, confidence 95% — v2)
+
 Every redirect runs `UPDATE short_urls SET hit_count = hit_count+1`. For a
 viral link every hit contends on one row's lock and creates a dead tuple
-(MVCC bloat → autovacuum pressure). Redirects are the highest-volume operation.
+(MVCC bloat → autovacuum pressure). Redirects are the highest-volume operation
+*in principle*.
 *Suggested fix:* drop the denormalized counter and derive counts from `hits`,
 or batch increments in Redis and flush periodically. This is a SPEC §5 design
 choice — fixing it means revisiting the spec.
+
+**Why not promoted to v1 (re-reviewed 2026-05-27).** The v1 workload doesn't
+exercise the redirect path under load: the vegeta attacker
+(`cmd/loadtest/attack.go`) only targets `POST /shorten`; the integration test
+does exactly one redirect for functional verification; demo browser traffic is
+<1 req/sec. SPEC §16 commits to redirect *latency* (`< 5 ms p99`) but no
+throughput SLO, so a single UPDATE per redirect stays inside budget and
+autovacuum keeps up trivially. The finding remains correct *in principle* —
+the score and confidence describe what would happen if the workload changed.
+**Trigger condition for promoting to v1 work:** either (a) the loadtest grows
+a redirect-path attack mode, or (b) SPEC §16 adds a redirect-throughput SLO.
 
 ### P4 — Per-request auth query, no cache (resolved 2026-05-26)
 

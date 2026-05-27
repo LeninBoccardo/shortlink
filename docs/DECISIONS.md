@@ -90,7 +90,15 @@ once the helm chart was real and each binary had its own ConfigMap surface.
 ### `hit_count` denormalized counter on `short_urls` (M1, deferred — see AUDIT.md P1)
 Every redirect runs `UPDATE ... SET hit_count = hit_count+1`. Known to cause
 row-lock contention + MVCC bloat on viral links. **Why kept:** SPEC §5 calls
-for the field; fixing it means a spec revisit. Tracked for v2.
+for the field, and v1's workload doesn't exercise the redirect path under
+load (loadtest's vegeta only targets `POST /shorten`; SPEC §16 commits to
+redirect *latency* not throughput) — at the project's actual demo scale, the
+per-redirect UPDATE is invisible to Postgres. **v2 trigger condition** (so
+this isn't a forever-deferral): promote when either the loadtest grows a
+redirect-path attack mode or §16 adds a redirect-throughput SLO. Likely
+landing shape when triggered: per-replica in-process aggregation + periodic
+flush (one UPDATE per slug per ~1s interval), keeping `hits` as the source
+of truth so the counter is a recoverable cache.
 
 ---
 

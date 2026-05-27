@@ -133,10 +133,21 @@ If the limiter's Redis call errors, the middleware logs and forwards — we
 don't 503 the whole API on a Redis blip. **Tradeoff:** during a Redis outage
 a key could exceed its limit briefly; that's better than a global outage.
 
-### No auth cache (M3, deferred — see AUDIT.md P4)
-Every `POST /shorten` does two DB queries (hash lookup + touch). An LRU
-cache keyed by hash would cut this to ~zero, but the limiter is the real
-hot path anyway. Tracked.
+### Auth cache: `sync.Map` + 60s TTL + 5-minute sweeper (M3 → resolved post-v1-audit)
+
+`internal/auth/validator.go` caches resolved keys keyed by hash with a
+60-second TTL — the redirect / shorten hot path skips Postgres on a cache
+hit. **Why valid-only:** failed lookups are deliberately not cached so a
+brute-force probe can't pollute the cache with junk entries; that gap is
+covered by a `ValidKeyFormat` pre-check that rejects malformed keys
+before any cache or DB work. **Why a sweeper:** without one, `Store` ran
+on every miss but `Delete` was never called, so the cache grew
+monotonically over the process lifetime — invisible at demo scale, a
+slow leak at "long-running process, millions of distinct hashes" scale.
+`Validator.Run(ctx)` ticks every 5 minutes (much larger than the TTL so
+the per-tick scan amortises cheaply) and deletes expired entries via
+`sync.Map.Range`. Cache hits/misses are exported via
+`auth_key_cache_total`.
 
 ---
 
@@ -153,6 +164,25 @@ because DNS records can change between enqueue and execution. **Why:**
 without re-validation, an attacker could submit a public URL whose DNS
 flips to RFC1918 mid-retry-cycle. **Tradeoff:** small latency cost per
 delivery attempt; accepted.
+
+### SSRF allowlist accepts `host:port` entries (post-v1 audit)
+
+`NewValidator` parses three entry shapes: CIDR, bare hostname (matches
+any port — the legacy form), and `host:port` (matches only that exact
+port). Both `ValidateURL` and the `SafeClient` dialer consult the same
+`matchHostAllow(host, port)` helper. **Why this matters:** in compose.full
+the allowlist used to be `loadtest,host.docker.internal` — a bare
+hostname for the in-stack webhook sink at `loadtest:8091`. That entry
+also legitimised webhook URLs pointing at the *unauthenticated control
+plane* on `loadtest:8090`, turning a webhook delivery into a free SSRF
+pivot: any holder of any API key could submit
+`webhook_url=http://loadtest:8090/api/attack/start` and weaponise the
+operator panel. The compose configs and the helm `_helpers.tpl` now pin
+`loadtest:8091` explicitly, so only the sink port is reachable. **Why
+keep the bare-hostname form at all:** backward-compatible with existing
+deployments and the worker's egress NetworkPolicy is the second layer
+of the defense — even a misconfigured allowlist can't reach a
+non-permitted pod in k8s.
 
 ### Per-attempt re-presign of QR download URL (M1)
 Every webhook attempt generates a fresh signed URL with the full TTL. **Why:**
@@ -563,3 +593,64 @@ inside non-Docker runtimes (Podman, k8s, CI). Explicit flag is set
 by the chart / compose.full file at the source of truth. **Tradeoff:**
 host-mode users who happen to be inside a container (e.g. WSL +
 Docker Desktop) need to set it themselves — none have asked yet.
+
+### `sameOriginGuard` on `/api/*` mutating endpoints (post-v1 audit)
+Wraps `/api/keys/{generate,revoke}` and `/api/attack/{start,stop}`.
+Reject the request unless `Sec-Fetch-Site` is `same-origin` or `none`
+(modern browsers) OR the `Origin` header is absent entirely (non-browser
+callers like curl / the integration test). Read-only `GET`s are not
+gated. **Why this and not CSRF tokens:** zero state, no session
+infrastructure, no JS to inject the token; modern browsers send
+Sec-Fetch-Site unconditionally and we can lean on it. **Why this
+matters:** the dev-mode 127.0.0.1 bind is not a browser boundary —
+any malicious page the operator visits could `fetch()` into
+`localhost:8090` and mint keys / start attacks in the background; the
+guard turns those requests into 403. The CORS response policy isn't
+the load-bearing part (CORS only blocks the *response read*; the
+request still lands). **Tradeoff:** an in-cluster server-to-server
+caller that DOES set an `Origin` header gets 403; today only browsers
+do that on `/api/*`.
+
+### `tierRateMax` caps operator-supplied `attack_rate_per_min` (post-v1 audit)
+10× the per-tier default (`free=100, pro=600, unlimited=2000` req/min).
+**Why a cap at all:** without it, a single key minted via the UI
+could drive vegeta at `999999999` and effectively DoS the api /
+Postgres pool / Redis rate-limit budget — easy to do by typo or
+copy-paste. Combined with the CSRF surface (above) it was a one-click
+amplifier. **Why 10×:** comfortably high enough for legitimate
+"what does this look like under burst" exploration, low enough that
+an accidental 9-digit rate is rejected at the door rather than
+ten minutes later when the operator notices the pgbouncer pool
+saturated. Existing keys with high rates aren't affected — the cap
+applies at key generation time only.
+
+### `keygen --replace` requires interactive `yes` or `--yes` flag (post-v1 audit)
+`--replace` calls `RevokeAllActiveAPIKeys` which is an unconditional
+UPDATE-all. Before the destructive call the command prints
+`--replace will revoke N active API key(s) in DATABASE_URL host <host>`
+and reads `yes\n` from stdin; anything else aborts with no DB writes.
+`--yes` skips the prompt for CI / non-interactive shells. **Why
+mandatory:** the bulk-revoke is a foot-gun when `DATABASE_URL` is
+exported from a stale shell pointed at the wrong cluster (e.g. a
+forgotten `kubectl port-forward` from a prior session against prod);
+the host + count echo is the load-bearing signal that "this is not
+the database I meant." **Why `dsnHost` echoes only `u.Host`:** the
+DSN may carry an inline password and we don't want it on the terminal.
+**Why interactive isn't the only option:** `--yes` exists for the
+makefile / CI path where stdin isn't a TTY.
+
+### Loadtest Ingress NetworkPolicy: `:8091` from worker only, `:8090` from nothing (post-v1 audit)
+The loadtest pod exposes two ports: `:8091/sink` (HMAC-verifying
+webhook receiver, legitimate target for worker deliveries) and
+`:8090/page` (the operator panel + unauthenticated `/api/keys` and
+`/api/attack` control plane). Without an Ingress policy, any pod in
+the namespace could `curl http://...-shortlink-loadtest:8090/api/keys/generate`
+and mint an unlimited-tier API key, or POST `/api/attack/start` to
+launch vegeta from inside the cluster. **What the policy allows:**
+`:8091` only from worker pods, `:8090` from nothing. **How operators
+still reach `:8090`:** `kubectl port-forward` tunnels through the
+kubelet, not the pod network, so NetworkPolicy doesn't apply — the
+manual workflow is unchanged. **If you front the operator panel with
+an external Ingress controller** (e.g. nginx-ingress for a
+multi-operator demo), add a from: rule matching the controller's pod
+labels to the policy.

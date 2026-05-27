@@ -41,8 +41,12 @@ func NewValidator(q *db.Queries) *Validator {
 
 // Validate hashes raw and looks it up. A missing or revoked key — both yield
 // pgx.ErrNoRows from the query — is reported as ErrInvalidKey.
+//
+// Malformed keys are rejected by ValidKeyFormat before any DB or cache work,
+// so invalid-key spam never reaches Postgres (failed lookups are deliberately
+// uncached to prevent brute-force pollution).
 func (v *Validator) Validate(ctx context.Context, raw string) (db.ApiKey, error) {
-	if raw == "" {
+	if !ValidKeyFormat(raw) {
 		return db.ApiKey{}, ErrInvalidKey
 	}
 	hash := HashKey(raw)

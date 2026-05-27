@@ -2,12 +2,16 @@
 // secrets, inserts their hashes into Postgres, and writes the raw material to
 // config/keys.yaml for the load-test runner (SPEC §4.4/§13).
 //
-// keys.yaml contains real secrets and is gitignored. Re-running keygen appends
-// three more keys and overwrites keys.yaml.
+// keys.yaml contains real secrets and is gitignored. By default re-running
+// keygen inserts three more keys (the prior batch stays valid in Postgres
+// even though keys.yaml on disk is overwritten). Pass --replace to revoke
+// every still-active key first, so the new keys.yaml is the only thing that
+// authenticates.
 package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -36,6 +40,9 @@ var profiles = []struct {
 }
 
 func main() {
+	replace := flag.Bool("replace", false, "revoke every still-active key in api_keys before inserting the new batch")
+	flag.Parse()
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config: %v", err)
@@ -48,6 +55,14 @@ func main() {
 	}
 	defer pool.Close()
 	queries := db.New(pool)
+
+	if *replace {
+		n, err := queries.RevokeAllActiveAPIKeys(ctx)
+		if err != nil {
+			log.Fatalf("revoke active keys: %v", err)
+		}
+		fmt.Printf("Revoked %d active key(s) before inserting new batch.\n", n)
+	}
 
 	var out keysfile.File
 	fmt.Println("Generated API keys (shown once — store them now):")

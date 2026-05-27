@@ -38,11 +38,16 @@ viral link every hit contends on one row's lock and creates a dead tuple
 or batch increments in Redis and flush periodically. This is a SPEC §5 design
 choice — fixing it means revisiting the spec.
 
-### P4 — Per-request auth query, no cache (score 5, confidence 95%)
-Every `POST /shorten` does `GetAPIKeyByHash` + insert (2 queries) against a
-pool of 8. Auth results are highly cacheable.
-*Suggested fix:* a small in-memory LRU (or Redis) cache of key-hash → resolved
-key, short TTL. Pairs naturally with M3's per-request Redis rate-limiting.
+### P4 — Per-request auth query, no cache (resolved 2026-05-26)
+
+`internal/auth/validator.go` now caches resolved keys in a `sync.Map` keyed
+by hash with a 60-second TTL — the redirect / shorten hot path skips
+Postgres entirely on a cache hit. Failed lookups are deliberately *not*
+cached so a brute-force flood can't pollute the cache with junk entries;
+that gap is closed by a `ValidKeyFormat` pre-check (added 2026-05-26 in the
+same package) that rejects malformed keys before touching cache or DB, so
+attacker probes with random `X-Api-Key` values never reach `api_keys`.
+Cache hits/misses are exported via the `auth_key_cache_total` counter.
 
 ### P6 — MinIO `Stat` round-trip per webhook attempt (score 3, confidence 95%)
 `handleWebhookJob` calls `store.Stat` on every delivery attempt solely to fill

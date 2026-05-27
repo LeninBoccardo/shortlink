@@ -73,6 +73,13 @@ type Querier interface {
 	// authenticates after the click. The hint guard avoids a UI accidentally
 	// revoking by id and racing with concurrent operator actions.
 	RevokeAPIKeyByHint(ctx context.Context, keyHint string) (int64, error)
+	// Bulk soft-delete used by `keygen --replace` to clear every still-active key
+	// before inserting the fresh tier batch. Without this, re-running keygen left
+	// old hashes valid in the DB even though keys.yaml on disk had moved on, so
+	// a previously-leaked raw key would keep authenticating until manually
+	// revoked. Matches RevokeAPIKeyByHint's NOW()-stamp semantics so in-flight
+	// requests under the revoked keys keep working until they finish.
+	RevokeAllActiveAPIKeys(ctx context.Context) (int64, error)
 	// Bumps last_used_at; the gateway throttles how often this runs via a Redis
 	// marker (SPEC §9 / LAST_USED_THROTTLE). The revoked_at IS NULL guard
 	// prevents the async toucher from bumping a key that was revoked between

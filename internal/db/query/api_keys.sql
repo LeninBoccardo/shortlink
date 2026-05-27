@@ -33,3 +33,13 @@ UPDATE api_keys SET last_used_at = NOW() WHERE id = $1 AND revoked_at IS NULL;
 -- revoking by id and racing with concurrent operator actions.
 UPDATE api_keys SET revoked_at = NOW()
 WHERE key_hint = $1 AND revoked_at IS NULL;
+
+-- name: RevokeAllActiveAPIKeys :execrows
+-- Bulk soft-delete used by `keygen --replace` to clear every still-active key
+-- before inserting the fresh tier batch. Without this, re-running keygen left
+-- old hashes valid in the DB even though keys.yaml on disk had moved on, so
+-- a previously-leaked raw key would keep authenticating until manually
+-- revoked. Matches RevokeAPIKeyByHint's NOW()-stamp semantics so in-flight
+-- requests under the revoked keys keep working until they finish.
+UPDATE api_keys SET revoked_at = NOW()
+WHERE revoked_at IS NULL;

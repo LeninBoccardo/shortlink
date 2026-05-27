@@ -50,3 +50,31 @@ func Hint(raw string) string {
 	}
 	return raw[len(raw)-hintLen:]
 }
+
+// ValidKeyFormat reports whether raw matches the sl_live_<32 base62> shape. It
+// is a cheap pre-check the validator runs before hitting Postgres so a flood
+// of obviously-malformed keys (random bytes, header noise, attacker probes)
+// never reaches the api_keys table.
+//
+// Why: failed lookups are deliberately not cached (cache-pollution risk), so
+// every garbage key would otherwise cost one PG round-trip. Rejecting on shape
+// before the cache/DB collapses that cost to a couple of bounds checks.
+func ValidKeyFormat(raw string) bool {
+	if len(raw) != len(keyPrefix)+randomLen {
+		return false
+	}
+	if raw[:len(keyPrefix)] != keyPrefix {
+		return false
+	}
+	for i := len(keyPrefix); i < len(raw); i++ {
+		c := raw[i]
+		switch {
+		case c >= '0' && c <= '9':
+		case c >= 'a' && c <= 'z':
+		case c >= 'A' && c <= 'Z':
+		default:
+			return false
+		}
+	}
+	return true
+}

@@ -20,6 +20,15 @@ var ErrInvalidKey = errors.New("invalid api key")
 // in Postgres takes up to this long to propagate.
 const validatorCacheTTL = 60 * time.Second
 
+// validatorCacheSweepInterval controls how often Run walks the cache to
+// delete entries whose TTL has expired. The TTL itself only gates *use* of
+// an entry; without a sweeper the cache grows monotonically as new key
+// hashes accumulate, which at long-running-process scale is a slow leak.
+// 5 minutes is far larger than the TTL so the per-tick scan amortises
+// cheaply (most entries are either fresh-and-staying-fresh or expired-
+// and-about-to-be-deleted; the in-between window is brief).
+const validatorCacheSweepInterval = 5 * time.Minute
+
 // Validator authenticates raw API keys against the api_keys table. Successful
 // lookups are cached for validatorCacheTTL so the redirect / shorten hot path
 // doesn't hit Postgres on every request. Failed lookups are NOT cached, so a
@@ -70,4 +79,41 @@ func (v *Validator) Validate(ctx context.Context, raw string) (db.ApiKey, error)
 		expiresAt: time.Now().Add(validatorCacheTTL),
 	})
 	return key, nil
+}
+
+// Run blocks until ctx is canceled, periodically deleting cache entries
+// whose TTL has passed. The Validate path only reads the cache (and rejects
+// stale entries on read), so without this sweeper a long-running api
+// process accumulates one *validatorCacheEntry per distinct key hash it
+// ever sees, forever. At expected operator scale that's nothing; at "this
+// process has been validating a million unique keys over weeks" it's a
+// slow memory leak.
+//
+// Caller spawns this as a goroutine; cancel ctx to stop. Safe to skip
+// calling — Validate works fine without the sweeper, just at the cost of
+// unbounded cache growth.
+func (v *Validator) Run(ctx context.Context) {
+	ticker := time.NewTicker(validatorCacheSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			v.sweepExpired(now)
+		}
+	}
+}
+
+// sweepExpired walks the cache once and deletes any entry whose expiresAt
+// is in the past (relative to the passed-in now). sync.Map.Range is safe
+// to interleave with Delete on the same key.
+func (v *Validator) sweepExpired(now time.Time) {
+	v.cache.Range(func(key, val any) bool {
+		entry := val.(*validatorCacheEntry)
+		if !now.Before(entry.expiresAt) {
+			v.cache.Delete(key)
+		}
+		return true
+	})
 }

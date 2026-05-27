@@ -137,6 +137,13 @@ func run() error {
 		IdleTimeout:       60 * time.Second,
 	}
 
+	// Background sweep of the validator cache — without this, the in-process
+	// key-hash map grows monotonically over the binary's lifetime. Canceled
+	// in the deferred cleanup below so it joins cleanly on shutdown.
+	sweepCtx, cancelSweep := context.WithCancel(context.Background())
+	defer cancelSweep()
+	go a.validator.Run(sweepCtx)
+
 	serverErr := make(chan error, 1)
 	go func() {
 		log.Info("api gateway listening", "addr", srv.Addr)

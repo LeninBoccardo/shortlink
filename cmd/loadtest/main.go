@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/leninboccardo/shortlink/internal/auth"
 	"github.com/leninboccardo/shortlink/internal/db"
 	"github.com/leninboccardo/shortlink/internal/events"
 	"github.com/leninboccardo/shortlink/internal/storage"
@@ -246,7 +247,7 @@ func run(cfg runConfig) error {
 func summaryMeta(results []attackResult, delivered, rejected map[string]int) map[string]any {
 	profiles := make([]map[string]any, 0, len(results))
 	for _, r := range results {
-		hint := hintOf(r.Profile.Key)
+		hint := auth.Hint(r.Profile.Key)
 		profiles = append(profiles, map[string]any{
 			"name":      r.Profile.Name,
 			"tier":      r.Profile.Tier,

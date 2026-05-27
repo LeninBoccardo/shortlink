@@ -31,6 +31,11 @@ import (
 	"github.com/leninboccardo/shortlink/internal/keysfile"
 )
 
+// maxAttackDuration caps the duration_seconds an operator can request.
+// 24h is generous for the demo-grade UI workflow; longer soak tests should
+// edit this constant explicitly rather than fall through accidentally.
+const maxAttackDuration = 24 * time.Hour
+
 // tierDefaults maps a tier label to the default vegeta attack rate per
 // minute used when the operator UI generates a key without specifying one.
 // Matches cmd/keygen's hard-coded profiles so the UI and the CLI converge
@@ -267,7 +272,7 @@ func (s *controlServer) handleKeys(w http.ResponseWriter, r *http.Request) {
 	for _, e := range entries {
 		out = append(out, keyView{
 			Name:             e.Name,
-			Hint:             hintOf(e.Key),
+			Hint:             auth.Hint(e.Key),
 			Tier:             e.Tier,
 			AttackRatePerMin: e.AttackRatePerMin,
 		})
@@ -444,11 +449,8 @@ func (s *controlServer) handleAttackStart(w http.ResponseWriter, r *http.Request
 	if req.DurationSeconds > 0 {
 		duration = time.Duration(req.DurationSeconds) * time.Second
 	}
-	// Cap at 24h to keep accidental "duration: 999999999" requests from
-	// pinning the system; if you legitimately want a week-long soak test,
-	// edit this constant — but the loadtest UI is for short demos.
-	if duration > 24*time.Hour {
-		http.Error(w, "duration must be <= 24h", http.StatusBadRequest)
+	if duration > maxAttackDuration {
+		http.Error(w, fmt.Sprintf("duration must be <= %s", maxAttackDuration), http.StatusBadRequest)
 		return
 	}
 
@@ -467,7 +469,7 @@ func (s *controlServer) handleAttackStart(w http.ResponseWriter, r *http.Request
 		}
 		selected = selected[:0]
 		for _, e := range entries {
-			if _, want := filterSet[hintOf(e.Key)]; want {
+			if _, want := filterSet[auth.Hint(e.Key)]; want {
 				selected = append(selected, e)
 			}
 		}
@@ -573,7 +575,7 @@ func decodeJSON(r *http.Request, into any) error {
 func hintsOf(entries []keysfile.Entry) []string {
 	out := make([]string, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, hintOf(e.Key))
+		out = append(out, auth.Hint(e.Key))
 	}
 	return out
 }

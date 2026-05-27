@@ -44,16 +44,6 @@ func newSink(keys *keyRegistry, log *slog.Logger) *sink {
 	}
 }
 
-// hintOf returns the last 6 chars of the raw key — mirrors auth.Hint without
-// pulling the whole auth package (which depends on the DB).
-func hintOf(raw string) string {
-	const n = 6
-	if len(raw) <= n {
-		return raw
-	}
-	return raw[len(raw)-n:]
-}
-
 func (s *sink) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {

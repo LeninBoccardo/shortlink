@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/leninboccardo/shortlink/internal/auth"
 	"github.com/leninboccardo/shortlink/internal/keysfile"
 )
 
@@ -63,13 +64,6 @@ func (r *keyRegistry) FindByTier(tier string) (keysfile.Entry, bool) {
 	return keysfile.Entry{}, false
 }
 
-// HasTier reports whether at least one entry of the given tier exists.
-// Used by the UI to disable test cards whose required tier isn't covered.
-func (r *keyRegistry) HasTier(tier string) bool {
-	_, ok := r.FindByTier(tier)
-	return ok
-}
-
 // SecretByHint returns the webhook signing secret for the key matching hint.
 // Used by the webhook sink to verify the HMAC on incoming deliveries — and
 // the registry-aware lookup means UI-generated keys are verifiable too
@@ -79,7 +73,7 @@ func (r *keyRegistry) SecretByHint(hint string) (string, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, k := range r.file.Keys {
-		if hintOf(k.Key) == hint {
+		if auth.Hint(k.Key) == hint {
 			return k.WebhookSecret, true
 		}
 	}
@@ -94,9 +88,9 @@ func (r *keyRegistry) SecretByHint(hint string) (string, bool) {
 func (r *keyRegistry) Append(entry keysfile.Entry) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	hint := hintOf(entry.Key)
+	hint := auth.Hint(entry.Key)
 	for _, k := range r.file.Keys {
-		if hintOf(k.Key) == hint {
+		if auth.Hint(k.Key) == hint {
 			return fmt.Errorf("key with hint %s already registered", hint)
 		}
 	}
@@ -118,7 +112,7 @@ func (r *keyRegistry) RemoveByHint(hint string) (bool, error) {
 	defer r.mu.Unlock()
 	idx := -1
 	for i, k := range r.file.Keys {
-		if hintOf(k.Key) == hint {
+		if auth.Hint(k.Key) == hint {
 			idx = i
 			break
 		}

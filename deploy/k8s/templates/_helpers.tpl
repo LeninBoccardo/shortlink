@@ -93,16 +93,24 @@ capabilities:
 {{/*
   Effective SSRF_ALLOWLIST: the user-provided list from
   .Values.config.ssrfAllowlist plus the in-cluster loadtest Service
-  hostname (so the worker can deliver attack webhooks without the SSRF
-  guard rejecting "<release>-shortlink-loadtest" as a private DNS name).
+  hostname *port-pinned to the sink* (so the worker can deliver attack
+  webhooks without the SSRF guard rejecting "<release>-shortlink-loadtest"
+  as a private DNS name). Port-pinning matters: a bare hostname entry
+  would also legitimise webhook URLs pointing at the unauthenticated
+  control plane on :8090, which lets any holder of an API key submit
+  `webhook_url=http://<loadtest>:8090/api/attack/start` and weaponise
+  the operator panel from outside the cluster. The auto-appended entry
+  here uses the sink port (8091) only; if you legitimately need other
+  ports allowlisted, add them explicitly in .Values.config.ssrfAllowlist.
   Returns a comma-separated string with no leading/trailing comma.
 */}}
 {{- define "shortlink.ssrfAllowlist" -}}
 {{- $user := .Values.config.ssrfAllowlist | default "" -}}
 {{- $loadtest := include "shortlink.componentName" (dict "root" . "component" "loadtest") -}}
+{{- $loadtestSink := printf "%s:8091" $loadtest -}}
 {{- if $user -}}
-{{- printf "%s,%s" $user $loadtest -}}
+{{- printf "%s,%s" $user $loadtestSink -}}
 {{- else -}}
-{{- $loadtest -}}
+{{- $loadtestSink -}}
 {{- end -}}
 {{- end -}}

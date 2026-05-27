@@ -41,6 +41,19 @@ var tierDefaults = map[string]int{
 	"unlimited": 200,
 }
 
+// tierRateMax caps the operator-supplied attack_rate_per_min per tier.
+// Without a cap, a single key minted via the UI can drive vegeta at an
+// arbitrarily high rate and effectively DoS the api / Postgres pool / Redis
+// rate-limit budget. The values are 10× the tier default — comfortably high
+// enough for legitimate "what does this look like under burst" exploration,
+// low enough that an accidental copy-paste of `999999999` is rejected at
+// the door rather than ten minutes later when the operator notices.
+var tierRateMax = map[string]int{
+	"free":      100,
+	"pro":       600,
+	"unlimited": 2000,
+}
+
 // validTier reports whether tier is one we recognise. Any other label would
 // pass through to the DB (which has no CHECK on tier — tier is just text in
 // the schema), so we gate at the UI layer.
@@ -183,12 +196,62 @@ func newControlServer(keys *keyRegistry, queries *db.Queries, cfg runConfig, log
 }
 
 func (s *controlServer) attachRoutes(mux *http.ServeMux) {
+	// Mutating endpoints get an extra same-origin gate (see sameOriginGuard
+	// for the reasoning); read-only ones don't need it because they can't
+	// change state. The dev-mode 127.0.0.1 bind is NOT a sufficient defence
+	// on its own — any malicious page the operator visits can fetch() into
+	// localhost from JavaScript.
 	mux.HandleFunc("/api/keys", s.handleKeys)
-	mux.HandleFunc("/api/keys/generate", s.handleGenerate)
-	mux.HandleFunc("/api/keys/revoke", s.handleRevoke)
+	mux.HandleFunc("/api/keys/generate", sameOriginGuard(s.handleGenerate))
+	mux.HandleFunc("/api/keys/revoke", sameOriginGuard(s.handleRevoke))
 	mux.HandleFunc("/api/attack/status", s.handleAttackStatus)
-	mux.HandleFunc("/api/attack/start", s.handleAttackStart)
-	mux.HandleFunc("/api/attack/stop", s.handleAttackStop)
+	mux.HandleFunc("/api/attack/start", sameOriginGuard(s.handleAttackStart))
+	mux.HandleFunc("/api/attack/stop", sameOriginGuard(s.handleAttackStop))
+}
+
+// sameOriginGuard rejects state-changing requests that aren't either
+// (a) browser requests with `Sec-Fetch-Site: same-origin` (or `none`, for
+// address-bar navigations), or (b) non-browser requests with no Origin
+// header at all (curl, integration tests, server-to-server calls).
+//
+// The middleware closes the CSRF gap on the operator panel: a cross-origin
+// page can fetch() into localhost:8090 because the dev-mode loopback bind
+// isn't a browser boundary; without this guard a visited webpage could
+// silently POST /api/keys/generate or /api/attack/start in the
+// background. The guard also blunts the SSRF-pivot vector (S1): even if
+// a webhook URL slips past the allowlist, the worker's outbound POST
+// won't carry a Sec-Fetch-Site header, but it WILL carry the worker's
+// own Origin/Referer chain depending on how the http.Client is set up
+// — explicitly rejecting "browser but cross-origin" closes the easy
+// case; the port-pinned allowlist closes the rest.
+func sameOriginGuard(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Read-only methods don't change state; never gate them.
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+			next(w, r)
+			return
+		}
+		site := r.Header.Get("Sec-Fetch-Site")
+		if site != "" {
+			// Modern browser: trust Sec-Fetch-Site, accept only first-party.
+			if site == "same-origin" || site == "none" {
+				next(w, r)
+				return
+			}
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
+		// No Sec-Fetch-Site header. Two cases: an old browser (rare in the
+		// operator-panel target audience) or a non-browser caller. We use
+		// the presence of Origin as the discriminator — browsers always
+		// send it on a non-GET request, server-to-server callers don't.
+		if r.Header.Get("Origin") != "" {
+			http.Error(w, "cross-origin request rejected (no Sec-Fetch-Site)", http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +302,10 @@ func (s *controlServer) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	rate := req.AttackRatePerMin
 	if rate <= 0 {
 		rate = tierDefaults[req.Tier]
+	}
+	if max := tierRateMax[req.Tier]; rate > max {
+		http.Error(w, fmt.Sprintf("attack_rate_per_min must be <= %d for tier %s", max, req.Tier), http.StatusBadRequest)
+		return
 	}
 
 	rawKey, err := auth.NewAPIKey()
@@ -362,8 +429,16 @@ func (s *controlServer) handleAttackStart(w http.ResponseWriter, r *http.Request
 		DurationSeconds int      `json:"duration_seconds"`
 		KeyHints        []string `json:"key_hints"`
 	}
-	// Body is optional — empty body means "use the CLI defaults".
-	_ = decodeJSON(r, &req)
+	// Body is optional — empty body means "use the CLI defaults" and
+	// decodeJSON returns nil for that case. A malformed body should be a
+	// hard 400 rather than silently falling through to defaults: prior to
+	// this, a webhook payload (`{job_id:..., qr_code:...}`) sent here via
+	// the SSRF pivot would unmarshal cleanly into the zero-valued request
+	// struct and start a 60-second attack on all keys.
+	if err := decodeJSON(r, &req); err != nil {
+		http.Error(w, "malformed JSON body", http.StatusBadRequest)
+		return
+	}
 
 	duration := s.cfg.duration
 	if req.DurationSeconds > 0 {

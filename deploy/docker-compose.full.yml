@@ -39,7 +39,12 @@ services:
       # SSRF_ALLOWLIST: the loadtest container's sink at "loadtest:8091"
       # is the legitimate webhook target during in-stack attacks. Without
       # this, the SSRF guard rejects "loadtest" as a non-public DNS name.
-      SSRF_ALLOWLIST: "loadtest,host.docker.internal"
+      # PIN THE PORT — a bare "loadtest" entry would also legitimise a
+      # webhook URL pointing at the unauthenticated control plane on :8090,
+      # turning the webhook delivery into a free SSRF pivot into the
+      # operator panel (an attacker with any API key could submit
+      # webhook_url=http://loadtest:8090/api/attack/start and weaponise it).
+      SSRF_ALLOWLIST: "loadtest:8091,host.docker.internal"
       # URL_BLOCKLIST: empty by default (matches the dev-mode default). Set
       # this here in your own override file if you want to demo COV-4.
       URL_BLOCKLIST: ""
@@ -78,9 +83,11 @@ services:
       OBSERVER_URL: "http://observer:9090"
       SHORT_URL_BASE: "http://localhost:8080"
       WORKER_PG_POOL_SIZE: "4"
-      # Same SSRF carve-out: the worker delivers webhooks to the loadtest
-      # sink during in-stack attacks.
-      SSRF_ALLOWLIST: "loadtest,host.docker.internal"
+      # Same SSRF carve-out (port-pinned for the same reason as the api
+      # service): the worker delivers webhooks to the loadtest sink during
+      # in-stack attacks; the unauthenticated control plane on :8090 must
+      # NOT be a legitimate webhook target.
+      SSRF_ALLOWLIST: "loadtest:8091,host.docker.internal"
       # POD_ID identifies the worker for the observer's pod heartbeat
       # (Redis key shortlink:pod:<POD_ID>:alive). Compose has no
       # downward API so we hand a stable name in.

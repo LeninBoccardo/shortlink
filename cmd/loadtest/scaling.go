@@ -63,7 +63,10 @@ type scalingCatalog struct {
 	dockerSF       singleflight.Group
 }
 
-const dockerStatsCacheTTL = 3 * time.Second
+const (
+	dockerStatsCacheTTL  = 3 * time.Second
+	dockerStatsCmdTimeout = 5 * time.Second
+)
 
 // scalingEnv is the small environment block returned alongside the catalog so
 // the frontend can render a "Docker Desktop" badge and tooltip explaining
@@ -356,8 +359,19 @@ func (c *scalingCatalog) dockerStats(ctx context.Context) (map[string]dockerStat
 	c.dockerCacheMu.Unlock()
 
 	// Cold/expired: dedupe concurrent refreshes.
+	//
+	// The subprocess gets its OWN bounded context, NOT the caller's ctx.
+	// singleflight binds the closure to the FIRST arriving caller; if that
+	// caller's request is cancelled mid-flight (browser tab closed, ctx
+	// timeout), exec.CommandContext would SIGKILL the docker subprocess
+	// and every joined waiter -- even waiters whose own contexts are still
+	// alive -- would receive the fork error. dockerStatsCmdTimeout bounds
+	// the subprocess runtime independently; `docker stats --no-stream` is
+	// typically <100ms so 5s is comfortable headroom.
 	res, err, _ := c.dockerSF.Do("docker-stats", func() (any, error) {
-		cmd := exec.CommandContext(ctx, "docker", "stats", "--no-stream", "--format", "{{json .}}")
+		cmdCtx, cmdCancel := context.WithTimeout(context.Background(), dockerStatsCmdTimeout)
+		defer cmdCancel()
+		cmd := exec.CommandContext(cmdCtx, "docker", "stats", "--no-stream", "--format", "{{json .}}")
 		out, runErr := cmd.Output()
 		var parsed map[string]dockerStatLine
 		if runErr == nil {

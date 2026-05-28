@@ -1,6 +1,6 @@
 # ShortLink
 
-[![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go)](https://go.dev) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#license)
+[![Go 1.26](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go)](https://go.dev) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#license) [![Release v1.0.0](https://img.shields.io/badge/release-v1.0.0-success)](https://github.com/LeninBoccardo/shortlink/releases/tag/v1.0.0)
 
 A production-grade URL shortener + QR-code generator built in Go as a portfolio
 demonstration of distributed systems, async processing, Kubernetes
